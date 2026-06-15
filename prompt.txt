@@ -1,0 +1,69 @@
+Quiero construir un software profesional en Python para traducir juegos hechos en RPG Maker, compatible con todas las generaciones posibles: RPG Maker 2000, 2003, XP, VX, VX Ace, MV y MZ.
+
+El objetivo es crear el mejor traductor gratuito para juegos RPG Maker, con calidad suficiente para convertirse en un producto comercial en el futuro.
+
+Requisitos principales:
+
+1. Interfaz gráfica profesional
+
+* Crear una GUI moderna, limpia y fácil de usar.
+* Permitir seleccionar la carpeta del juego.
+* Detectar automáticamente la versión de RPG Maker.
+* Mostrar los archivos encontrados y el estado del proceso.
+* Incluir barra de progreso real.
+* Mostrar logs en tiempo real para que el usuario sepa qué está pasando.
+* Evitar que el usuario piense que el programa se bloqueó.
+
+2. Compatibilidad
+
+* Soportar RPG Maker 2000/2003.
+* Soportar RPG Maker XP.
+* Soportar RPG Maker VX y VX Ace.
+* Soportar RPG Maker MV y MZ.
+* Detectar estructuras como Data, www/data, js, plugins, MapXXX, CommonEvents, Actors, Items, Skills, System, Troops, etc.
+
+3. Extracción de textos
+
+* Extraer diálogos, nombres, descripciones, eventos, comandos, objetos, habilidades, enemigos, mapas y textos del sistema.
+* Evitar traducir código, variables, scripts, comandos internos, etiquetas, rutas de archivos o placeholders.
+* Conservar la estructura original del juego.
+* Crear backups automáticos antes de modificar cualquier archivo.
+
+4. Traducción
+
+* Permitir traducción mediante API externa configurable.
+* Permitir modo manual/exportación a CSV, JSON o Excel.
+* Permitir importar traducciones revisadas.
+* Manejar textos largos por lotes.
+* Evitar cuelgues, timeouts o pérdida de progreso.
+* Guardar checkpoints para poder continuar si el proceso se interrumpe.
+
+5. Seguridad y estabilidad
+
+* No modificar archivos originales sin backup.
+* Validar codificación de archivos.
+* Manejar errores sin cerrar el programa.
+* Mostrar errores entendibles para el usuario.
+* Crear logs técnicos para depuración.
+* Procesar archivos pesados sin congelar la interfaz usando hilos, colas o procesos en segundo plano.
+
+6. Experiencia de usuario
+
+* Mostrar porcentaje, archivo actual, textos procesados, textos pendientes y tiempo estimado.
+* Botón de pausar, continuar y cancelar.
+* Reporte final con cantidad de textos detectados, traducidos, ignorados y errores.
+* Opción para abrir carpeta de salida.
+* Opción para probar el juego traducido sin sobrescribir el original.
+
+7. Arquitectura profesional
+
+* Diseñar el proyecto de forma modular.
+* Separar GUI, lógica de detección, extractores, traductores, validadores, backups y exportadores.
+* Usar buenas prácticas de Python.
+* Código limpio, mantenible y escalable.
+* Preparar el proyecto para empaquetarse como ejecutable .exe.
+
+8. Resultado esperado
+   Quiero que me entregues una arquitectura completa del proyecto, carpetas, módulos, flujo de trabajo, librerías recomendadas, riesgos técnicos, estrategia para cada versión de RPG Maker y luego empecemos a construirlo paso a paso.
+
+No quiero una solución improvisada. Quiero una herramienta robusta, gratuita, potente, estable, con apariencia profesional y con potencial real de convertirse en un producto vendible.
