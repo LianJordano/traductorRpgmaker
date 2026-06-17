@@ -25,6 +25,76 @@ def _build_translator(name: str, src: str, tgt: str) -> BaseTranslator:
         return GoogleTranslator(src, tgt)
 
 
+# Substrings that identify a rate-limit / throttling response from any backend.
+_RATE_LIMIT_HINTS = (
+    "429", "too many requests", "rate limit", "ratelimit",
+    "quota", "throttl", "temporarily", "503", "try again later",
+)
+
+
+def _is_rate_limit(exc: Exception) -> bool:
+    """Heuristically detect rate-limiting across deep-translator/DeepL/OpenAI,
+    which surface 429s as different exception types and messages."""
+    name = type(exc).__name__.lower()
+    if "toomanyrequests" in name or "ratelimit" in name:
+        return True
+    msg = str(exc).lower()
+    return any(hint in msg for hint in _RATE_LIMIT_HINTS)
+
+
+class AdaptiveLimiter:
+    """Gates concurrent API calls with a limit that can shrink under rate
+    limiting and slowly recover. Acts as a resizable semaphore so the worker
+    can back off without tearing down the thread pool."""
+
+    def __init__(self, initial: int, minimum: int = 1) -> None:
+        self._cond = threading.Condition()
+        self._limit = max(minimum, initial)
+        self._min = minimum
+        self._in_use = 0
+        self._ok_streak = 0
+
+    @property
+    def limit(self) -> int:
+        return self._limit
+
+    def acquire(self) -> None:
+        with self._cond:
+            while self._in_use >= self._limit:
+                self._cond.wait()
+            self._in_use += 1
+
+    def release(self) -> None:
+        with self._cond:
+            self._in_use -= 1
+            self._cond.notify()
+
+    def decrease(self) -> Optional[int]:
+        """Halve the allowed concurrency. Returns the new limit if it changed."""
+        with self._cond:
+            self._ok_streak = 0
+            new = max(self._min, self._limit // 2)
+            if new != self._limit:
+                self._limit = new
+                return new
+            return None
+
+    def on_success(self, cap: int) -> Optional[int]:
+        """Count a success; after a healthy streak, raise the limit by one
+        toward `cap`. Returns the new limit if it changed."""
+        with self._cond:
+            self._ok_streak += 1
+            if self._ok_streak >= 25 and self._limit < cap:
+                self._ok_streak = 0
+                self._limit += 1
+                self._cond.notify()
+                return self._limit
+            return None
+
+
+_MAX_RETRIES = 6  # retries per text on rate-limit before giving up
+
+
 class TranslationWorker(threading.Thread):
     def __init__(
         self,
@@ -86,37 +156,128 @@ class TranslationWorker(threading.Thread):
             self._emit(WorkerMessage.error(f"No se pudo inicializar el traductor: {exc}"))
             return
 
+        max_workers = max(1, int(config.get("max_workers", 8)))
+
         pending = [e for e in self.result.entries if e.status == "pending"]
         total = len(pending)
-        self._log("INFO", f"Traduciendo {total} textos...")
 
-        for done, entry in enumerate(pending):
-            # Handle pause
-            while self._pause.is_set() and not self._cancel.is_set():
-                import time
-                time.sleep(0.2)
+        # Deduplicate by original text. RPG games repeat names, menu terms and
+        # whole dialogue lines heavily, so translating only the unique strings
+        # (and copying the result to every entry that shares it) often removes
+        # a large fraction of the API calls for free.
+        groups: dict[str, list] = {}
+        for e in pending:
+            groups.setdefault(e.original, []).append(e)
+        unique_texts = list(groups.keys())
+        self._log(
+            "INFO",
+            f"Traduciendo {total} textos ({len(unique_texts)} únicos tras deduplicar) "
+            f"con {max_workers} hilos en paralelo...",
+        )
 
-            if self._cancel.is_set():
-                self._log("INFO", "Traducción cancelada.")
-                break
+        import time
+        from concurrent.futures import ThreadPoolExecutor, as_completed
 
-            try:
-                protected, saved = protect_game_codes(entry.original)
-                raw = translator.translate_one(protected)
-                entry.translation = restore_game_codes(raw, saved)
-                entry.status = "translated"
-            except Exception as exc:
-                logger.warning(f"Error al traducir '{entry.uid}': {exc}")
-                entry.status = "error"
+        # deep-translator's client is not guaranteed thread-safe, so each worker
+        # thread builds and reuses its own translator instance.
+        tls = threading.local()
 
-            self._emit(WorkerMessage.progress(done + 1, total, entry.file))
+        def get_translator() -> BaseTranslator:
+            tr = getattr(tls, "tr", None)
+            if tr is None:
+                tr = _build_translator(self.translator_name, src, tgt)
+                tls.tr = tr
+            return tr
 
-            if (done + 1) % 25 == 0:
-                if config.get("checkpoint_enabled"):
+        limiter = AdaptiveLimiter(max_workers)
+        log_lock = threading.Lock()
+
+        def _wait(seconds: float) -> None:
+            """Sleep in small slices so cancel stays responsive."""
+            slept = 0.0
+            while slept < seconds and not self._cancel.is_set():
+                time.sleep(min(0.2, seconds - slept))
+                slept += 0.2
+
+        def work(text: str):
+            """Translate one unique text with adaptive concurrency + backoff on
+            rate limiting. Returns the translation, None if cancelled, or raises
+            after exhausting retries (so the caller marks it as an error)."""
+            backoff = 1.0
+            for attempt in range(_MAX_RETRIES + 1):
+                while self._pause.is_set() and not self._cancel.is_set():
+                    time.sleep(0.2)
+                if self._cancel.is_set():
+                    return None
+
+                limiter.acquire()
+                try:
+                    protected, saved = protect_game_codes(text)
+                    raw = get_translator().translate_one(protected)
+                    out = restore_game_codes(raw, saved)
+                    if delay > 0:
+                        time.sleep(delay / 1000)
+                    raised = limiter.on_success(cap=max_workers)
+                    if raised is not None:
+                        with log_lock:
+                            self._log("INFO", f"Conexión estable: subiendo a {raised} hilos.")
+                    return out
+                except Exception as exc:
+                    if not _is_rate_limit(exc) or attempt >= _MAX_RETRIES:
+                        raise
+                    lowered = limiter.decrease()
+                    if lowered is not None:
+                        with log_lock:
+                            self._log("WARNING",
+                                      f"Límite de peticiones detectado — reduciendo a {lowered} "
+                                      f"hilos y reintentando.")
+                finally:
+                    limiter.release()
+
+                # Backoff happens outside the limiter slot so we free capacity
+                # for other threads while this one waits.
+                _wait(backoff)
+                backoff = min(backoff * 2, 30.0)
+            return None
+
+        # Throttle checkpoint writes by elapsed time instead of every N items.
+        # Dumping the full result (50k+ entries) every few texts is O(n²) and
+        # makes large jobs crawl; once every ~20s keeps the cost negligible.
+        checkpoint_interval_s = 20.0
+        last_checkpoint = time.monotonic()
+        completed_entries = 0
+
+        pool = ThreadPoolExecutor(max_workers=max_workers)
+        try:
+            futures = {pool.submit(work, text): text for text in unique_texts}
+            for fut in as_completed(futures):
+                text = futures[fut]
+                grp = groups[text]
+                try:
+                    translated = fut.result()
+                    if translated is not None:
+                        for e in grp:
+                            e.translation = translated
+                            e.status = "translated"
+                except Exception as exc:
+                    logger.warning(f"Error al traducir '{grp[0].uid}': {exc}")
+                    for e in grp:
+                        e.status = "error"
+
+                completed_entries += len(grp)
+                self._emit(WorkerMessage.progress(completed_entries, total, grp[0].file))
+
+                now = time.monotonic()
+                if config.get("checkpoint_enabled") and now - last_checkpoint >= checkpoint_interval_s:
                     checkpoint.save(self.result.game_path, self.result.to_dict())
+                    last_checkpoint = now
 
-            import time
-            time.sleep(delay / 1000)
+                if self._cancel.is_set():
+                    self._log("INFO", "Traducción cancelada.")
+                    break
+        finally:
+            # cancel_futures stops queued-but-not-started tasks immediately
+            pool.shutdown(wait=False, cancel_futures=True)
 
         # Final checkpoint after loop ends (covers items translated since last periodic save)
         if config.get("checkpoint_enabled"):

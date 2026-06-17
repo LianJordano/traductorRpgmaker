@@ -33,6 +33,8 @@ class MainWindow(ctk.CTk):
         self._msg_queue: queue.Queue[WorkerMessage] = queue.Queue()
         self._paused = False
         self._worker_start_time: float = 0.0
+        self._apply_running = False
+        self._apply_ok = True
 
         self._setup_window()
         self._build_layout()
@@ -346,6 +348,8 @@ class MainWindow(ctk.CTk):
             )
 
         elif msg.type == "stats":
+            if "apply_ok" in msg.data:
+                self._apply_ok = msg.data.get("apply_ok", True)
             version = msg.data.get("version")
             if version:
                 self._progress.set_status(f"Detectado: {version}", theme.SUCCESS)
@@ -363,6 +367,12 @@ class MainWindow(ctk.CTk):
             elapsed = time.monotonic() - self._worker_start_time if self._worker_start_time else 0
             self._progress.mark_complete(elapsed)
             self._on_worker_done()
+            if self._apply_running:
+                self._apply_running = False
+                if self._apply_ok:
+                    mb.showinfo("Listo", "Traducciones aplicadas a los archivos del juego.", parent=self)
+                else:
+                    mb.showerror("Error", "La reinserción tuvo errores. Revisa el registro.", parent=self)
 
         elif msg.type == "error":
             err = msg.data.get("msg", "Error desconocido")
@@ -523,24 +533,24 @@ class MainWindow(ctk.CTk):
             parent=self,
         ):
             return
-        from core.detector import detect
         game_path = self._file_panel.get_game_path()
         if not game_path:
             return
-        detection = detect(game_path)
-        if config.get("backup_enabled") and detection.data_dir:
-            from core import backup
-            backup.create_backup(detection.data_dir, detection.game_dir)
-        from extractors.factory import get_extractor
-        extractor = get_extractor(detection)
-        if not extractor:
-            mb.showerror("Error", "No hay extractor disponible para esta versión.", parent=self)
-            return
-        ok = extractor.reinsert(self._result)
-        if ok:
-            mb.showinfo("Listo", "Traducciones aplicadas a los archivos del juego.", parent=self)
-        else:
-            mb.showerror("Error", "La reinserción tuvo errores. Revisa el registro.", parent=self)
+
+        # Run backup + reinsertion in a background thread so the GUI doesn't
+        # freeze on large games (copying files and reinserting 50k+ texts).
+        import time
+        self._worker_start_time = time.monotonic()
+        self._progress.reset()
+        self._progress.start_timer()
+        self._progress.set_status("Aplicando al juego...", theme.ACCENT)
+
+        from workers.apply_worker import ApplyWorker
+        self._apply_running = True
+        self._apply_ok = True
+        self._worker = ApplyWorker(game_path, self._result, self._msg_queue)
+        self._worker.start()
+        self._set_busy(True)
 
     def _toggle_pause(self) -> None:
         if not self._worker:

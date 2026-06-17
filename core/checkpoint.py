@@ -18,7 +18,15 @@ def _key_path(game_path: str | Path) -> Path:
 def save(game_path: str | Path, data: dict) -> None:
     path = _key_path(game_path)
     try:
-        path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+        # Compact JSON (no indentation) — for 50k+ entries this is dramatically
+        # smaller and faster to write/read than an indented dump. Write to a temp
+        # file then replace, so an interrupted save can't corrupt the checkpoint.
+        tmp = path.with_suffix(".json.tmp")
+        tmp.write_text(
+            json.dumps(data, ensure_ascii=False, separators=(",", ":")),
+            encoding="utf-8",
+        )
+        tmp.replace(path)
         logger.debug(f"Checkpoint saved: {path.name}")
     except Exception as exc:
         logger.warning(f"Could not save checkpoint: {exc}")

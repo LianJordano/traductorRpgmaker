@@ -15,6 +15,7 @@ DEFAULTS: dict[str, Any] = {
     "translator": "google",
     "batch_size": 50,
     "delay_ms": 200,
+    "max_workers": 8,  # concurrent translation requests
     "backup_enabled": True,
     "checkpoint_enabled": True,
     "openai_api_key": "",

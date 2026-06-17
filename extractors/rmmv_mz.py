@@ -79,7 +79,12 @@ class MvMzExtractor(BaseExtractor):
                 by_file.setdefault(entry.file, []).append(entry)
 
         success = True
-        for filename, entries in by_file.items():
+        total_files = len(by_file)
+        for idx, (filename, entries) in enumerate(by_file.items()):
+            if self._cancelled():
+                logger.info("Reinsertion cancelled.")
+                break
+            self._progress(idx, total_files, filename)
             fpath = self.data_dir / filename
             if not fpath.exists():
                 logger.warning(f"File not found for reinsertion: {filename}")
@@ -92,6 +97,7 @@ class MvMzExtractor(BaseExtractor):
             except Exception as exc:
                 logger.error(f"Reinsertion failed for {filename}: {exc}")
                 success = False
+        self._progress(total_files, total_files, "Done")
         return success
 
     # ---- private helpers ----
@@ -369,18 +375,20 @@ class MvMzExtractor(BaseExtractor):
         if not isinstance(data, list):
             return data
         fields = SIMPLE_FILES.get(filename, [])
+        # Index entries by (id, field) once so lookups are O(1) instead of
+        # rescanning the whole entry list for every object/field.
+        by_id_field: dict = {}
+        for entry in entry_map.values():
+            key = (entry.metadata.get("id"), entry.metadata.get("field"))
+            by_id_field[key] = entry
         for obj in data:
             if not isinstance(obj, dict):
                 continue
             obj_id = obj.get("id", "?")
             for field in fields:
-                uid = f"{filename}::[{obj_id}].{field}::0"
-                # UID might vary by index; scan entry_map
-                for uid_key, entry in entry_map.items():
-                    if entry.file == filename and entry.metadata.get("id") == obj_id \
-                            and entry.metadata.get("field") == field:
-                        obj[field] = entry.translation
-                        break
+                entry = by_id_field.get((obj_id, field))
+                if entry is not None:
+                    obj[field] = entry.translation
         return data
 
     def _reinsert_system(self, data: Any, entry_map: dict, filename: str) -> Any:
@@ -425,9 +433,20 @@ class MvMzExtractor(BaseExtractor):
             if isinstance(obj, dict):
                 obj[last] = value
 
+    def _group_by_prefix(self, entry_map: dict) -> dict:
+        """Group entries by their context prefix (everything before the final
+        `.dialogue[..]` / `.choice[..]` / `.scroll[..]` segment) so each event
+        list can fetch its entries in O(1) instead of rescanning every entry."""
+        by_prefix: dict[str, list] = {}
+        for entry in entry_map.values():
+            prefix = entry.context.rsplit(".", 1)[0]
+            by_prefix.setdefault(prefix, []).append(entry)
+        return by_prefix
+
     def _reinsert_map(self, data: Any, entry_map: dict, filename: str) -> Any:
         if not isinstance(data, dict):
             return data
+        by_prefix = self._group_by_prefix(entry_map)
         # displayName
         for entry in entry_map.values():
             if entry.metadata.get("field") == "displayName":
@@ -439,14 +458,14 @@ class MvMzExtractor(BaseExtractor):
                 if isinstance(event, dict):
                     for pg_idx, page in enumerate(event.get("pages", [])):
                         ctx = f"event[{ev_id}].page[{pg_idx}]"
-                        self._reinsert_event_list(page.get("list", []), entry_map, ctx)
+                        self._reinsert_event_list(page.get("list", []), by_prefix.get(ctx, []))
         elif isinstance(events, list):
             for event in events:
                 if isinstance(event, dict):
                     ev_id = event.get("id", "?")
                     for pg_idx, page in enumerate(event.get("pages", [])):
                         ctx = f"event[{ev_id}].page[{pg_idx}]"
-                        self._reinsert_event_list(page.get("list", []), entry_map, ctx)
+                        self._reinsert_event_list(page.get("list", []), by_prefix.get(ctx, []))
         return data
 
     def _reinsert_list_with_events(
@@ -454,33 +473,53 @@ class MvMzExtractor(BaseExtractor):
     ) -> Any:
         if not isinstance(data, list):
             return data
+        by_prefix = self._group_by_prefix(entry_map)
+        # Index name entries by object id for O(1) lookup
+        names_by_id: dict = {}
+        for entry in entry_map.values():
+            if entry.metadata.get("field") == "name":
+                names_by_id[entry.metadata.get("id")] = entry
         for obj in data:
             if not isinstance(obj, dict):
                 continue
             obj_id = obj.get("id")
-            for entry in entry_map.values():
-                if entry.metadata.get("field") == "name" and entry.metadata.get("id") == obj_id:
-                    obj["name"] = entry.translation
+            name_entry = names_by_id.get(obj_id)
+            if name_entry is not None:
+                obj["name"] = name_entry.translation
             # CommonEvents.json: top-level list per event
             if "list" in obj:
                 ctx = f"event[{obj_id}]"
-                self._reinsert_event_list(obj.get("list") or [], entry_map, ctx)
+                self._reinsert_event_list(obj.get("list") or [], by_prefix.get(ctx, []))
             # Troops.json: pages with lists
             for pg_idx, page in enumerate(obj.get("pages", [])):
                 ctx = f"troop[{obj_id}].page[{pg_idx}]"
-                self._reinsert_event_list(page.get("list", []), entry_map, ctx)
+                self._reinsert_event_list(page.get("list", []), by_prefix.get(ctx, []))
         return data
 
-    def _reinsert_event_list(self, cmd_list: list, entry_map: dict, ctx_prefix: str) -> None:
-        """Apply translations back into an event command list (in-place)."""
-        # Scope to entries that belong to this specific event/page
-        relevant = {uid: e for uid, e in entry_map.items()
-                    if e.context.startswith(ctx_prefix + ".")}
-        if not relevant:
+    def _reinsert_event_list(self, cmd_list: list, entries: list) -> None:
+        """Apply translations back into an event command list (in-place).
+
+        `entries` are already scoped to this event/page. They are indexed by
+        command position so the command list is walked only once (O(n))."""
+        if not entries:
             return
 
+        dialogue_by_start: dict = {}
+        choice_by_cmd: dict = {}
+        scroll_by_cmd: dict = {}
+        for entry in entries:
+            meta = entry.metadata
+            etype = meta.get("type")
+            if etype == "dialogue":
+                dialogue_by_start[meta.get("block_start")] = entry
+            elif etype == "choice":
+                choice_by_cmd.setdefault(meta.get("cmd_index"), []).append(entry)
+            elif etype == "scroll":
+                scroll_by_cmd[meta.get("cmd_index")] = entry
+
         i = 0
-        while i < len(cmd_list):
+        n = len(cmd_list)
+        while i < n:
             cmd = cmd_list[i]
             if not isinstance(cmd, dict):
                 i += 1
@@ -488,41 +527,34 @@ class MvMzExtractor(BaseExtractor):
             code = cmd.get("code", 0)
 
             if code == 101:
-                for entry in relevant.values():
-                    meta = entry.metadata
-                    if meta.get("type") == "dialogue" and meta.get("block_start") == i:
-                        lines = entry.translation.split("\n")
-                        # Collect all consecutive 401 commands
-                        orig_401: list = []
-                        j = i + 1
-                        while j < len(cmd_list):
-                            nc = cmd_list[j]
-                            if isinstance(nc, dict) and nc.get("code") == 401:
-                                orig_401.append(nc)
-                                j += 1
-                            else:
-                                break
-                        # Write lines back; blank out any 401 entries beyond the translation
-                        for k, nc in enumerate(orig_401):
-                            if nc.get("parameters"):
-                                nc["parameters"][0] = lines[k] if k < len(lines) else ""
-                        break
+                entry = dialogue_by_start.get(i)
+                if entry is not None:
+                    lines = entry.translation.split("\n")
+                    # Collect all consecutive 401 commands
+                    orig_401: list = []
+                    j = i + 1
+                    while j < n:
+                        nc = cmd_list[j]
+                        if isinstance(nc, dict) and nc.get("code") == 401:
+                            orig_401.append(nc)
+                            j += 1
+                        else:
+                            break
+                    # Write lines back; blank out any 401 entries beyond the translation
+                    for k, nc in enumerate(orig_401):
+                        if nc.get("parameters"):
+                            nc["parameters"][0] = lines[k] if k < len(lines) else ""
 
             elif code == 102:
-                for entry in relevant.values():
-                    meta = entry.metadata
-                    if meta.get("type") == "choice" and meta.get("cmd_index") == i:
-                        c_idx = meta.get("choice_index", 0)
-                        params = cmd.get("parameters", [])
-                        if params and isinstance(params[0], list) and c_idx < len(params[0]):
-                            params[0][c_idx] = entry.translation
+                for entry in choice_by_cmd.get(i, []):
+                    c_idx = entry.metadata.get("choice_index", 0)
+                    params = cmd.get("parameters", [])
+                    if params and isinstance(params[0], list) and c_idx < len(params[0]):
+                        params[0][c_idx] = entry.translation
 
             elif code == 405:
-                for entry in relevant.values():
-                    meta = entry.metadata
-                    if meta.get("type") == "scroll" and meta.get("cmd_index") == i:
-                        if cmd.get("parameters"):
-                            cmd["parameters"][0] = entry.translation
-                        break
+                entry = scroll_by_cmd.get(i)
+                if entry is not None and cmd.get("parameters"):
+                    cmd["parameters"][0] = entry.translation
 
             i += 1

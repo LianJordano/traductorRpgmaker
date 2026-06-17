@@ -139,6 +139,13 @@ class SettingsPanel(ctk.CTkScrollableFrame):
                                     number_of_steps=20),
         )
 
+        self._workers_var = ctk.IntVar(value=8)
+        self._row(
+            "Hilos en paralelo (traducción)",
+            lambda f: ctk.CTkSlider(f, from_=1, to=32, variable=self._workers_var,
+                                    number_of_steps=31),
+        )
+
         # Save button
         ctk.CTkButton(
             self, text="Guardar Configuración", height=theme.BTN_H,
@@ -164,6 +171,7 @@ class SettingsPanel(ctk.CTkScrollableFrame):
         self._backup_var.set(config.get("backup_enabled", True))
         self._checkpoint_var.set(config.get("checkpoint_enabled", True))
         self._delay_var.set(config.get("delay_ms", 200))
+        self._workers_var.set(config.get("max_workers", 8))
 
     def _lang_label(self, code: str) -> str:
         for label, c in LANGUAGES.items():
@@ -185,6 +193,7 @@ class SettingsPanel(ctk.CTkScrollableFrame):
             "backup_enabled": self._backup_var.get(),
             "checkpoint_enabled": self._checkpoint_var.get(),
             "delay_ms": self._delay_var.get(),
+            "max_workers": self._workers_var.get(),
         })
         from core import logger
         logger.success("Configuración guardada.")
