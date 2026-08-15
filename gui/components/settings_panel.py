@@ -160,6 +160,22 @@ class SettingsPanel(ctk.CTkScrollableFrame):
         ctk.CTkSwitch(frame2, variable=self._checkpoint_var, text="", onvalue=True,
                       offvalue=False).pack(side="right")
 
+        self._compress_var = ctk.BooleanVar(value=True)
+        comp_frame = ctk.CTkFrame(self, fg_color="transparent")
+        comp_frame.pack(fill="x", padx=6, pady=3)
+        ctk.CTkLabel(comp_frame, text="Comprimir los backups (ZIP)",
+                     font=theme.FONT_BODY, text_color=theme.TEXT_PRIMARY,
+                     width=250, anchor="w").pack(side="left")
+        ctk.CTkSwitch(comp_frame, variable=self._compress_var, text="",
+                      onvalue=True, offvalue=False).pack(side="right")
+
+        self._keep_var = ctk.IntVar(value=1)
+        self._row(
+            "Backups a conservar (+ el original)",
+            lambda f: ctk.CTkSlider(f, from_=0, to=5, variable=self._keep_var,
+                                    number_of_steps=5),
+        )
+
         self._delay_var = ctk.IntVar(value=200)
         self._row(
             "Retraso entre solicitudes (ms)",
@@ -203,6 +219,8 @@ class SettingsPanel(ctk.CTkScrollableFrame):
         self._wrap_var.set(config.get("wrap_text", True))
         self._lines_var.set(config.get("max_message_lines", 4))
         self._notes_var.set(config.get("translate_notes", False))
+        self._compress_var.set(config.get("backup_compress", True))
+        self._keep_var.set(config.get("backup_keep", 1))
 
     def _lang_label(self, code: str) -> str:
         for label, c in LANGUAGES.items():
@@ -228,6 +246,8 @@ class SettingsPanel(ctk.CTkScrollableFrame):
             "wrap_text": self._wrap_var.get(),
             "max_message_lines": self._lines_var.get(),
             "translate_notes": self._notes_var.get(),
+            "backup_compress": self._compress_var.get(),
+            "backup_keep": self._keep_var.get(),
         })
         from core import logger
         logger.success("Configuración guardada.")

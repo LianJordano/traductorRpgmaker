@@ -40,6 +40,12 @@ class MainWindow(ctk.CTk):
         self._build_layout()
         self._hook_logger()
         self._start_queue_poll()
+        # Drop checkpoints for games that have not been touched in a month, so
+        # the resume data does not accumulate forever.
+        try:
+            checkpoint.prune()
+        except Exception:
+            pass
 
         last = config.get("last_game_path", "")
         if last and Path(last).is_dir():
@@ -273,6 +279,92 @@ class MainWindow(ctk.CTk):
             command=self._apply_to_game,
         ).pack(padx=10, pady=(0, 10), anchor="w")
 
+        # Backup maintenance
+        bk_card = ctk.CTkFrame(tab, fg_color=theme.BG_CARD, corner_radius=8)
+        bk_card.pack(fill="x", padx=8, pady=4)
+        ctk.CTkLabel(bk_card, text="Copias de seguridad", font=theme.FONT_SUBTITLE,
+                     text_color=theme.ACCENT, anchor="w").pack(padx=10, pady=(8, 2), anchor="w")
+        self._backup_info = ctk.CTkLabel(
+            bk_card,
+            text="Selecciona una carpeta de juego para ver sus backups.",
+            font=theme.FONT_SMALL, text_color=theme.TEXT_MUTED, anchor="w",
+        )
+        self._backup_info.pack(padx=10, pady=(0, 8), anchor="w")
+
+        bk_btns = ctk.CTkFrame(bk_card, fg_color="transparent")
+        bk_btns.pack(fill="x", padx=10, pady=(0, 10))
+        ctk.CTkButton(
+            bk_btns, text="Liberar espacio", height=36, width=150,
+            font=theme.FONT_BODY, fg_color=theme.WARNING,
+            command=self._clean_backups,
+        ).pack(side="left", padx=(0, 6))
+        ctk.CTkButton(
+            bk_btns, text="Restaurar juego original", height=36, width=180,
+            font=theme.FONT_BODY, fg_color=theme.BG_SECONDARY,
+            command=self._restore_backup,
+        ).pack(side="left")
+
+    def _refresh_backup_info(self) -> None:
+        from core import backup as bk
+        path = self._file_panel.get_game_path()
+        if not path:
+            return
+        try:
+            from core.detector import detect
+            game_dir = detect(path).game_dir
+            count, size = bk.usage(game_dir)
+        except Exception:
+            return
+        if not count:
+            text = "Todavía no hay backups de este juego."
+        else:
+            text = (f"{count} backup(s), {size / (1024*1024):.1f} MB. "
+                    f"La copia sin traducir se conserva siempre.")
+        self._backup_info.configure(text=text)
+
+    def _clean_backups(self) -> None:
+        from core import backup as bk
+        from core.detector import detect
+        path = self._file_panel.get_game_path()
+        if not path:
+            mb.showwarning("Sin carpeta", "Selecciona primero una carpeta de juego.", parent=self)
+            return
+        game_dir = detect(path).game_dir
+        freed = bk.reclaim_space(game_dir)
+        self._refresh_backup_info()
+        mb.showinfo(
+            "Backups",
+            f"Espacio liberado: {freed / (1024*1024):.1f} MB\n\n"
+            "Se conserva la copia sin traducir del juego.",
+            parent=self,
+        )
+
+    def _restore_backup(self) -> None:
+        from core import backup as bk
+        from core.detector import detect
+        path = self._file_panel.get_game_path()
+        if not path:
+            mb.showwarning("Sin carpeta", "Selecciona primero una carpeta de juego.", parent=self)
+            return
+        detection = detect(path)
+        backups = bk.list_backups(detection.game_dir)
+        original = next((b for b in backups if bk.is_original(b)), None)
+        if original is None:
+            mb.showwarning("Sin backup", "No hay ninguna copia original de este juego.", parent=self)
+            return
+        if not mb.askyesno(
+            "Restaurar",
+            f"Se devolverán los archivos del juego al estado sin traducir\n"
+            f"({original.name}).\n\n¿Continuar?",
+            parent=self,
+        ):
+            return
+        data_dir = detection.data_dir or detection.game_dir
+        if bk.restore_backup(original, data_dir):
+            mb.showinfo("Restaurado", "El juego ha vuelto a su estado original.", parent=self)
+        else:
+            mb.showerror("Error", "No se pudo restaurar. Revisa el registro.", parent=self)
+
     def _build_tab_results(self) -> None:
         tab = self._tabs.tab("Resultados")
         self._results_frame = ctk.CTkScrollableFrame(
@@ -397,6 +489,7 @@ class MainWindow(ctk.CTk):
     def _on_folder_selected(self, path: str) -> None:
         config.set("last_game_path", path)
         self._log_panel.append("INFO", f"Carpeta del juego: {path}")
+        self._refresh_backup_info()
 
     def _pick_output_dir(self) -> None:
         d = fd.askdirectory(title="Seleccionar Carpeta de Salida")

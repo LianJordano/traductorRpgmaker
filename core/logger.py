@@ -1,6 +1,7 @@
 """Centralized logging: file log + in-memory queue for GUI consumption."""
 from __future__ import annotations
 import logging
+import logging.handlers
 import queue
 from pathlib import Path
 from typing import Callable
@@ -16,12 +17,15 @@ _QUEUE_MAX = 5000
 _queue: queue.Queue[dict] = queue.Queue(maxsize=_QUEUE_MAX)
 _callbacks: list[Callable[[dict], None]] = []
 
+# Rotated on purpose: translating a 100k-text game writes a lot of lines, and a
+# single unbounded log file had grown past 100 MB.
+_handler = logging.handlers.RotatingFileHandler(
+    LOG_FILE, maxBytes=4 * 1024 * 1024, backupCount=2, encoding="utf-8"
+)
 logging.basicConfig(
-    level=logging.DEBUG,
+    level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
-    handlers=[
-        logging.FileHandler(LOG_FILE, encoding="utf-8"),
-    ],
+    handlers=[_handler],
 )
 _file_logger = logging.getLogger("rpg_translator")
 
