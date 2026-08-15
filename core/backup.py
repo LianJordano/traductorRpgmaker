@@ -28,17 +28,28 @@ def create_backup(data_dir: Path, game_dir: Path) -> Optional[Path]:
 
 
 def list_backups(game_dir: Path) -> list[Path]:
+    """Return the `backup_<timestamp>` folders, newest first."""
     backup_root = game_dir / "_rpgt_backups"
     if not backup_root.is_dir():
         return []
-    return sorted(backup_root.iterdir(), reverse=True)
+    return sorted((p for p in backup_root.iterdir() if p.is_dir()), reverse=True)
 
 
 def restore_backup(backup_path: Path, data_dir: Path) -> bool:
-    """Restore a specific backup over the current data_dir (atomic: rename then copy)."""
+    """Restore a specific backup over the current data_dir (atomic: rename then copy).
+
+    `backup_path` may be either the `backup_<timestamp>` folder returned by
+    :func:`list_backups` or the data folder inside it; the copy is always taken
+    from the folder that actually holds the game files, so restoring cannot nest
+    a `Data/Data` directory inside the game.
+    """
     if not backup_path.is_dir():
         logger.error(f"Backup path does not exist: {backup_path}")
         return False
+
+    inner = backup_path / data_dir.name
+    if inner.is_dir():
+        backup_path = inner
 
     # Move existing data aside first so we can roll back if the copy fails
     temp_aside = data_dir.parent / (data_dir.name + "_rpgt_restore_tmp")
@@ -66,10 +77,14 @@ def restore_backup(backup_path: Path, data_dir: Path) -> bool:
 
 
 def cleanup_old_backups(game_dir: Path, keep: int = 5) -> None:
-    backups = list_backups(game_dir)
-    for old in backups[keep:]:
+    """Delete all but the `keep` newest backups.
+
+    Note this removes the backup folders themselves — deleting `old.parent`
+    would wipe out `_rpgt_backups`, i.e. every backup ever made.
+    """
+    for old in list_backups(game_dir)[keep:]:
         try:
-            shutil.rmtree(old.parent)
-            logger.info(f"Removed old backup: {old.parent}")
+            shutil.rmtree(old)
+            logger.info(f"Removed old backup: {old}")
         except Exception as exc:
             logger.warning(f"Could not remove old backup: {exc}")

@@ -101,6 +101,34 @@ class SettingsPanel(ctk.CTkScrollableFrame):
             ),
         )
 
+        # --- Text layout ---
+        self._section("Texto en el juego")
+
+        self._wrap_var = ctk.BooleanVar(value=True)
+        wrap_frame = ctk.CTkFrame(self, fg_color="transparent")
+        wrap_frame.pack(fill="x", padx=6, pady=3)
+        ctk.CTkLabel(wrap_frame, text="Ajustar líneas al cuadro de mensaje",
+                     font=theme.FONT_BODY, text_color=theme.TEXT_PRIMARY,
+                     width=250, anchor="w").pack(side="left")
+        ctk.CTkSwitch(wrap_frame, variable=self._wrap_var, text="",
+                      onvalue=True, offvalue=False).pack(side="right")
+
+        self._lines_var = ctk.IntVar(value=4)
+        self._row(
+            "Líneas por mensaje",
+            lambda f: ctk.CTkSlider(f, from_=1, to=8, variable=self._lines_var,
+                                    number_of_steps=7),
+        )
+
+        self._notes_var = ctk.BooleanVar(value=False)
+        notes_frame = ctk.CTkFrame(self, fg_color="transparent")
+        notes_frame.pack(fill="x", padx=6, pady=3)
+        ctk.CTkLabel(notes_frame, text="Traducir notas (rompe plugins)",
+                     font=theme.FONT_BODY, text_color=theme.TEXT_PRIMARY,
+                     width=250, anchor="w").pack(side="left")
+        ctk.CTkSwitch(notes_frame, variable=self._notes_var, text="",
+                      onvalue=True, offvalue=False).pack(side="right")
+
         # --- Export ---
         self._section("Exportación")
 
@@ -172,6 +200,9 @@ class SettingsPanel(ctk.CTkScrollableFrame):
         self._checkpoint_var.set(config.get("checkpoint_enabled", True))
         self._delay_var.set(config.get("delay_ms", 200))
         self._workers_var.set(config.get("max_workers", 8))
+        self._wrap_var.set(config.get("wrap_text", True))
+        self._lines_var.set(config.get("max_message_lines", 4))
+        self._notes_var.set(config.get("translate_notes", False))
 
     def _lang_label(self, code: str) -> str:
         for label, c in LANGUAGES.items():
@@ -194,6 +225,9 @@ class SettingsPanel(ctk.CTkScrollableFrame):
             "checkpoint_enabled": self._checkpoint_var.get(),
             "delay_ms": self._delay_var.get(),
             "max_workers": self._workers_var.get(),
+            "wrap_text": self._wrap_var.get(),
+            "max_message_lines": self._lines_var.get(),
+            "translate_notes": self._notes_var.get(),
         })
         from core import logger
         logger.success("Configuración guardada.")

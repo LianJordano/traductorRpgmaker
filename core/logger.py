@@ -9,7 +9,11 @@ LOG_DIR = Path.home() / ".rpg_translator" / "logs"
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 LOG_FILE = LOG_DIR / "rpg_translator.log"
 
-_queue: queue.Queue[dict] = queue.Queue()
+# Bounded on purpose: a 100k-text game emits a lot of log lines, and nothing
+# drains this queue unless a consumer asks for it. Oldest entries are dropped
+# once it fills so a long run cannot grow memory without limit.
+_QUEUE_MAX = 5000
+_queue: queue.Queue[dict] = queue.Queue(maxsize=_QUEUE_MAX)
 _callbacks: list[Callable[[dict], None]] = []
 
 logging.basicConfig(
@@ -24,7 +28,15 @@ _file_logger = logging.getLogger("rpg_translator")
 
 def _emit(level: str, msg: str) -> None:
     entry = {"level": level, "msg": msg}
-    _queue.put(entry)
+    while True:
+        try:
+            _queue.put_nowait(entry)
+            break
+        except queue.Full:
+            try:
+                _queue.get_nowait()
+            except queue.Empty:
+                break
     for cb in _callbacks:
         try:
             cb(entry)

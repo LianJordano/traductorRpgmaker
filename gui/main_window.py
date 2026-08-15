@@ -323,8 +323,12 @@ class MainWindow(ctk.CTk):
         self._process_queue()
 
     def _process_queue(self) -> None:
+        # Capped per tick: a large game can enqueue thousands of log lines
+        # between polls, and draining them all in one pass freezes the window.
+        budget = 300
         try:
-            while True:
+            while budget > 0:
+                budget -= 1
                 msg: WorkerMessage = self._msg_queue.get_nowait()
                 try:
                     self._handle_msg(msg)
@@ -432,8 +436,13 @@ class MainWindow(ctk.CTk):
         translator_name = self._trans_var.get()
         if self._overwrite_var.get():
             for e in self._result.entries:
-                if e.status == "translated":
+                if e.status in ("translated", "error"):
                     e.status = "pending"
+
+        import time
+        self._worker_start_time = time.monotonic()
+        self._progress.reset()
+        self._progress.start_timer()
 
         from workers.translation_worker import TranslationWorker
         self._worker = TranslationWorker(self._result, self._msg_queue, translator_name)

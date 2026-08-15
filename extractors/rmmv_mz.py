@@ -1,41 +1,50 @@
 """Extractor for RPG Maker MV and MZ (JSON-based games)."""
 from __future__ import annotations
-import json
+import re
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any
 
-from core import logger
+from core import config, logger
 from core.models import ExtractionResult, TextEntry
 from extractors.base import BaseExtractor
 from parsers.json_parser import load as json_load, save as json_save
-from validators.text_filter import is_translatable
+from utils.text_utils import layout_message
 
-# Command codes that contain translatable text
-TEXT_COMMANDS = {101, 401, 102, 405}
-CHOICE_COMMAND = 102
-SCROLL_TEXT = 405
+# --- Event command codes -----------------------------------------------------
+CODE_SHOW_TEXT = 101        # [faceName, faceIndex, background, position, speaker?]
+CODE_TEXT_LINE = 401
+CODE_SHOW_CHOICES = 102     # parameters[0] is the list of choice labels
+CODE_CHOICE_BRANCH = 402    # [index, label]
+CODE_SCROLL_TEXT = 105      # header of a scrolling-text block
+CODE_SCROLL_LINE = 405
+CODE_CHANGE_NAME = 320      # [actorId, name]
+CODE_CHANGE_NICKNAME = 324
+CODE_CHANGE_PROFILE = 325
+
+NAME_COMMANDS = {CODE_CHANGE_NAME, CODE_CHANGE_NICKNAME, CODE_CHANGE_PROFILE}
+#: MZ added a speaker-name box; the name lives in parameters[4] of code 101.
+SPEAKER_PARAM = 4
 
 # JSON files and their translatable fields
 SIMPLE_FILES: dict[str, list[str]] = {
-    "Actors.json":    ["name", "nickname", "profile", "note"],
-    "Armors.json":    ["name", "description", "note"],
-    "Classes.json":   ["name", "note"],
-    "Enemies.json":   ["name", "note"],
-    "Items.json":     ["name", "description", "note"],
-    "Skills.json":    ["name", "description", "message1", "message2", "note"],
-    "States.json":    ["name", "note", "message1", "message2", "message3", "message4"],
-    "Weapons.json":   ["name", "description", "note"],
-    "Tilesets.json":  ["name", "note"],
+    "Actors.json":    ["name", "nickname", "profile"],
+    "Armors.json":    ["name", "description"],
+    "Classes.json":   ["name"],
+    "Enemies.json":   ["name"],
+    "Items.json":     ["name", "description"],
+    "Skills.json":    ["name", "description", "message1", "message2"],
+    "States.json":    ["name", "message1", "message2", "message3", "message4"],
+    "Weapons.json":   ["name", "description"],
+    "Tilesets.json":  ["name"],
     "CommonEvents.json": [],  # handled separately via event list
     "Troops.json":    ["name"],
 }
 
-SYSTEM_FIELDS = [
-    "gameTitle", "currencyUnit",
-    # Terms
-    "terms.basic", "terms.params", "terms.commands", "terms.messages",
-    "skillTypes", "weaponTypes", "armorTypes", "equipTypes",
-]
+# `note` is what plugins parse for their notetags; translating it silently
+# breaks them, so it is opt-in through the `translate_notes` setting.
+NOTE_FIELD = "note"
+
+SYSTEM_LIST_FIELDS = ("skillTypes", "weaponTypes", "armorTypes", "equipTypes")
 
 
 class MvMzExtractor(BaseExtractor):
@@ -72,7 +81,6 @@ class MvMzExtractor(BaseExtractor):
 
     def reinsert(self, result: ExtractionResult) -> bool:
         """Write translated texts back into the JSON files."""
-        # Group entries by file
         by_file: dict[str, list[TextEntry]] = {}
         for entry in result.entries:
             if entry.status == "translated" and entry.translation:
@@ -89,18 +97,32 @@ class MvMzExtractor(BaseExtractor):
             if not fpath.exists():
                 logger.warning(f"File not found for reinsertion: {filename}")
                 continue
+            original_bytes = fpath.read_bytes()
             try:
                 data = json_load(fpath)
                 data = self._reinsert_into_data(data, entries, filename)
                 json_save(fpath, data)
+                # Verify the game can still read what we just wrote.
+                json_load(fpath)
                 logger.success(f"Reinserted {len(entries)} texts into {filename}")
             except Exception as exc:
                 logger.error(f"Reinsertion failed for {filename}: {exc}")
+                try:
+                    fpath.write_bytes(original_bytes)
+                    logger.warning(f"Restored original {filename} (left untranslated).")
+                except Exception as restore_exc:
+                    logger.error(f"Could not restore {filename}: {restore_exc}")
                 success = False
         self._progress(total_files, total_files, "Done")
         return success
 
     # ---- private helpers ----
+
+    def _fields_for(self, filename: str) -> list[str]:
+        fields = list(SIMPLE_FILES.get(filename, []))
+        if fields and config.get("translate_notes"):
+            fields.append(NOTE_FIELD)
+        return fields
 
     def _get_target_files(self) -> list[Path]:
         files = []
@@ -130,7 +152,7 @@ class MvMzExtractor(BaseExtractor):
         if name == "Troops.json":
             return self._extract_troops(data, name)
         if name in SIMPLE_FILES:
-            return self._extract_simple(data, name, SIMPLE_FILES[name])
+            return self._extract_simple(data, name, self._fields_for(name))
         return []
 
     def _extract_simple(
@@ -191,7 +213,7 @@ class MvMzExtractor(BaseExtractor):
                         if isinstance(v, str):
                             add(f"terms.{section}.{key}", v)
 
-        for list_key in ("skillTypes", "weaponTypes", "armorTypes", "equipTypes"):
+        for list_key in SYSTEM_LIST_FIELDS:
             lst = data.get(list_key, [])
             if isinstance(lst, list):
                 for i, v in enumerate(lst):
@@ -211,33 +233,27 @@ class MvMzExtractor(BaseExtractor):
             )
             if entry:
                 entries.append(entry)
-        events = data.get("events", {})
+        for ev_id, event in self._iter_events(data.get("events")):
+            pages = event.get("pages", [])
+            for pg_idx, page in enumerate(pages):
+                if not isinstance(page, dict):
+                    continue
+                entries.extend(self._extract_event_list(
+                    page.get("list", []), filename, f"event[{ev_id}].page[{pg_idx}]"
+                ))
+        return entries
+
+    @staticmethod
+    def _iter_events(events: Any):
+        """Yield (id, event) for both the dict and list shapes MV/MZ maps use."""
         if isinstance(events, dict):
             for ev_id, event in events.items():
-                if not isinstance(event, dict):
-                    continue
-                pages = event.get("pages", [])
-                for pg_idx, page in enumerate(pages):
-                    ev_entries = self._extract_event_list(
-                        page.get("list", []),
-                        filename,
-                        f"event[{ev_id}].page[{pg_idx}]",
-                    )
-                    entries.extend(ev_entries)
+                if isinstance(event, dict):
+                    yield ev_id, event
         elif isinstance(events, list):
             for event in events:
-                if not isinstance(event, dict):
-                    continue
-                pages = event.get("pages", [])
-                ev_id = event.get("id", "?")
-                for pg_idx, page in enumerate(pages):
-                    ev_entries = self._extract_event_list(
-                        page.get("list", []),
-                        filename,
-                        f"event[{ev_id}].page[{pg_idx}]",
-                    )
-                    entries.extend(ev_entries)
-        return entries
+                if isinstance(event, dict):
+                    yield event.get("id", "?"), event
 
     def _extract_common_events(self, data: Any, filename: str) -> list[TextEntry]:
         entries = []
@@ -270,6 +286,8 @@ class MvMzExtractor(BaseExtractor):
                 entries.append(entry)
             pages = obj.get("pages", [])
             for pg_idx, page in enumerate(pages):
+                if not isinstance(page, dict):
+                    continue
                 entries.extend(
                     self._extract_event_list(
                         page.get("list", []),
@@ -279,81 +297,116 @@ class MvMzExtractor(BaseExtractor):
                 )
         return entries
 
+    # -- event command lists -------------------------------------------------
+
+    @staticmethod
+    def _collect_block(cmd_list: list, start: int, line_code: int) -> tuple[list[str], int]:
+        """Collect the text lines of the block starting at `start`."""
+        lines: list[str] = []
+        j = start + 1
+        n = len(cmd_list)
+        while j < n:
+            cmd = cmd_list[j]
+            if not isinstance(cmd, dict) or cmd.get("code") != line_code:
+                break
+            params = cmd.get("parameters") or []
+            lines.append(params[0] if params and isinstance(params[0], str) else "")
+            j += 1
+        return lines, j
+
     def _extract_event_list(
         self, cmd_list: list, filename: str, context_prefix: str
     ) -> list[TextEntry]:
-        """Parse RPG Maker event command list and extract dialogue/choices."""
+        """Parse an RPG Maker event command list and extract every visible text."""
         entries: list[TextEntry] = []
         if not isinstance(cmd_list, list):
             return entries
 
         i = 0
         block_idx = 0
-        while i < len(cmd_list):
+        n = len(cmd_list)
+        while i < n:
             cmd = cmd_list[i]
             if not isinstance(cmd, dict):
                 i += 1
                 continue
             code = cmd.get("code", 0)
-            params = cmd.get("parameters", [])
+            params = cmd.get("parameters", []) or []
 
-            if code == 101:
-                # Start of text block — collect all following 401 lines
-                lines = []
-                j = i + 1
-                while j < len(cmd_list):
-                    next_cmd = cmd_list[j]
-                    if isinstance(next_cmd, dict) and next_cmd.get("code") == 401:
-                        lines.append(next_cmd["parameters"][0] if next_cmd.get("parameters") else "")
-                        j += 1
-                    else:
-                        break
+            if code == CODE_SHOW_TEXT:
+                # MZ keeps the speaker-name box in parameters[4].
+                if len(params) > SPEAKER_PARAM and isinstance(params[SPEAKER_PARAM], str):
+                    entry = self._make_entry(
+                        filename, f"{context_prefix}.speaker[{i}]",
+                        params[SPEAKER_PARAM], i,
+                        {"type": "param", "cmd_index": i, "param_index": SPEAKER_PARAM},
+                    )
+                    if entry:
+                        entries.append(entry)
+                lines, j = self._collect_block(cmd_list, i, CODE_TEXT_LINE)
                 full_text = "\n".join(lines)
-                if full_text:
-                    ctx = f"{context_prefix}.dialogue[{block_idx}]"
-                    meta = {
-                        "type": "dialogue",
-                        "block_start": i,
-                        "line_count": len(lines),
-                        "header_params": params,
-                    }
-                    entry = self._make_entry(filename, ctx, full_text, block_idx, meta)
+                if full_text.strip():
+                    entry = self._make_entry(
+                        filename, f"{context_prefix}.dialogue[{block_idx}]",
+                        full_text, block_idx,
+                        {"type": "dialogue", "block_start": i, "line_count": len(lines)},
+                    )
                     if entry:
                         entries.append(entry)
                     block_idx += 1
                 i = j
                 continue
 
-            elif code == 102:
-                # Show Choices
+            if code == CODE_SCROLL_TEXT:
+                lines, j = self._collect_block(cmd_list, i, CODE_SCROLL_LINE)
+                full_text = "\n".join(lines)
+                if full_text.strip():
+                    entry = self._make_entry(
+                        filename, f"{context_prefix}.scroll[{block_idx}]",
+                        full_text, block_idx,
+                        {"type": "scroll", "block_start": i, "line_count": len(lines)},
+                    )
+                    if entry:
+                        entries.append(entry)
+                    block_idx += 1
+                i = j
+                continue
+
+            if code == CODE_SHOW_CHOICES:
                 choices = params[0] if params else []
                 if isinstance(choices, list):
                     for c_idx, choice in enumerate(choices):
                         if isinstance(choice, str):
-                            ctx = f"{context_prefix}.choice[{block_idx}][{c_idx}]"
                             entry = self._make_entry(
-                                filename, ctx, choice, block_idx * 100 + c_idx,
+                                filename,
+                                f"{context_prefix}.choice[{block_idx}][{c_idx}]",
+                                choice, block_idx * 1000 + c_idx,
                                 {"type": "choice", "cmd_index": i, "choice_index": c_idx},
                             )
                             if entry:
                                 entries.append(entry)
                     block_idx += 1
 
-            elif code == 405:
-                # Scroll text line (standalone)
-                text = params[0] if params else ""
-                if isinstance(text, str):
-                    ctx = f"{context_prefix}.scroll[{block_idx}]"
-                    entry = self._make_entry(
-                        filename, ctx, text, block_idx,
-                        {"type": "scroll", "cmd_index": i},
-                    )
-                    if entry:
-                        entries.append(entry)
-                    block_idx += 1
+            elif code == CODE_CHOICE_BRANCH and len(params) > 1 and isinstance(params[1], str):
+                entry = self._make_entry(
+                    filename, f"{context_prefix}.branch[{i}]", params[1], i,
+                    {"type": "param", "cmd_index": i, "param_index": 1},
+                )
+                if entry:
+                    entries.append(entry)
+
+            elif code in NAME_COMMANDS and len(params) > 1 and isinstance(params[1], str):
+                entry = self._make_entry(
+                    filename, f"{context_prefix}.name[{i}]", params[1], i,
+                    {"type": "param", "cmd_index": i, "param_index": 1},
+                )
+                if entry:
+                    entries.append(entry)
 
             i += 1
         return entries
+
+    # -- reinsertion ---------------------------------------------------------
 
     def _reinsert_into_data(
         self, data: Any, entries: list[TextEntry], filename: str
@@ -369,12 +422,10 @@ class MvMzExtractor(BaseExtractor):
             return self._reinsert_list_with_events(data, entry_map, filename)
         return self._reinsert_simple(data, entry_map, filename)
 
-    def _reinsert_simple(
-        self, data: Any, entry_map: dict, filename: str
-    ) -> Any:
+    def _reinsert_simple(self, data: Any, entry_map: dict, filename: str) -> Any:
         if not isinstance(data, list):
             return data
-        fields = SIMPLE_FILES.get(filename, [])
+        fields = self._fields_for(filename)
         # Index entries by (id, field) once so lookups are O(1) instead of
         # rescanning the whole entry list for every object/field.
         by_id_field: dict = {}
@@ -400,38 +451,36 @@ class MvMzExtractor(BaseExtractor):
                 data["gameTitle"] = entry.translation
             elif path == "currencyUnit":
                 data["currencyUnit"] = entry.translation
-            elif path.startswith("terms."):
-                self._set_nested(data, path, entry.translation)
-            elif "[" in path:
+            elif path:
                 self._set_nested(data, path, entry.translation)
         return data
 
     def _set_nested(self, data: dict, path: str, value: str) -> None:
         """Set a dot-notated path with optional array index like terms.basic[0]."""
-        import re
-        parts = re.split(r"\.", path)
-        obj = data
-        for i, part in enumerate(parts[:-1]):
-            m = re.match(r"(\w+)\[(\d+)\]", part)
+        parts = path.split(".")
+        obj: Any = data
+        for part in parts[:-1]:
+            m = re.fullmatch(r"(\w+)\[(\d+)\]", part)
             if m:
                 key, idx = m.group(1), int(m.group(2))
-                if isinstance(obj, dict):
-                    obj = obj.get(key, {})
-                if isinstance(obj, list) and idx < len(obj):
-                    obj = obj[idx]
+                if not isinstance(obj, dict) or not isinstance(obj.get(key), list):
+                    return
+                obj = obj[key]
+                if idx >= len(obj):
+                    return
+                obj = obj[idx]
             else:
-                if isinstance(obj, dict):
-                    obj = obj.get(part, {})
+                if not isinstance(obj, dict) or part not in obj:
+                    return
+                obj = obj[part]
         last = parts[-1]
-        m = re.match(r"(\w+)\[(\d+)\]", last)
+        m = re.fullmatch(r"(\w+)\[(\d+)\]", last)
         if m:
             key, idx = m.group(1), int(m.group(2))
-            if isinstance(obj, dict) and key in obj and isinstance(obj[key], list):
-                if idx < len(obj[key]):
-                    obj[key][idx] = value
-        else:
-            if isinstance(obj, dict):
-                obj[last] = value
+            if isinstance(obj, dict) and isinstance(obj.get(key), list) and idx < len(obj[key]):
+                obj[key][idx] = value
+        elif isinstance(obj, dict):
+            obj[last] = value
 
     def _group_by_prefix(self, entry_map: dict) -> dict:
         """Group entries by their context prefix (everything before the final
@@ -447,25 +496,17 @@ class MvMzExtractor(BaseExtractor):
         if not isinstance(data, dict):
             return data
         by_prefix = self._group_by_prefix(entry_map)
-        # displayName
         for entry in entry_map.values():
             if entry.metadata.get("field") == "displayName":
                 data["displayName"] = entry.translation
+                break
 
-        events = data.get("events", {})
-        if isinstance(events, dict):
-            for ev_id, event in events.items():
-                if isinstance(event, dict):
-                    for pg_idx, page in enumerate(event.get("pages", [])):
-                        ctx = f"event[{ev_id}].page[{pg_idx}]"
-                        self._reinsert_event_list(page.get("list", []), by_prefix.get(ctx, []))
-        elif isinstance(events, list):
-            for event in events:
-                if isinstance(event, dict):
-                    ev_id = event.get("id", "?")
-                    for pg_idx, page in enumerate(event.get("pages", [])):
-                        ctx = f"event[{ev_id}].page[{pg_idx}]"
-                        self._reinsert_event_list(page.get("list", []), by_prefix.get(ctx, []))
+        for ev_id, event in self._iter_events(data.get("events")):
+            for pg_idx, page in enumerate(event.get("pages", [])):
+                if not isinstance(page, dict):
+                    continue
+                ctx = f"event[{ev_id}].page[{pg_idx}]"
+                self._reinsert_event_list(page, by_prefix.get(ctx, []))
         return data
 
     def _reinsert_list_with_events(
@@ -474,7 +515,6 @@ class MvMzExtractor(BaseExtractor):
         if not isinstance(data, list):
             return data
         by_prefix = self._group_by_prefix(entry_map)
-        # Index name entries by object id for O(1) lookup
         names_by_id: dict = {}
         for entry in entry_map.values():
             if entry.metadata.get("field") == "name":
@@ -488,73 +528,133 @@ class MvMzExtractor(BaseExtractor):
                 obj["name"] = name_entry.translation
             # CommonEvents.json: top-level list per event
             if "list" in obj:
-                ctx = f"event[{obj_id}]"
-                self._reinsert_event_list(obj.get("list") or [], by_prefix.get(ctx, []))
+                self._reinsert_event_list(obj, by_prefix.get(f"event[{obj_id}]", []))
             # Troops.json: pages with lists
             for pg_idx, page in enumerate(obj.get("pages", [])):
+                if not isinstance(page, dict):
+                    continue
                 ctx = f"troop[{obj_id}].page[{pg_idx}]"
-                self._reinsert_event_list(page.get("list", []), by_prefix.get(ctx, []))
+                self._reinsert_event_list(page, by_prefix.get(ctx, []))
         return data
 
-    def _reinsert_event_list(self, cmd_list: list, entries: list) -> None:
-        """Apply translations back into an event command list (in-place).
+    def _reinsert_event_list(self, holder: dict, entries: list) -> None:
+        """Apply translations back into an event command list (in place).
 
-        `entries` are already scoped to this event/page. They are indexed by
-        command position so the command list is walked only once (O(n))."""
-        if not entries:
+        The list is rebuilt rather than patched: a translation rarely needs the
+        same number of lines as the original, and writing only into the existing
+        `401` slots dropped every extra line and left blanks behind. Extra line
+        commands are created as needed, and long messages are split into further
+        pages so nothing overflows the four-line message window.
+        """
+        cmd_list = holder.get("list")
+        if not isinstance(cmd_list, list) or not entries:
             return
 
-        dialogue_by_start: dict = {}
-        choice_by_cmd: dict = {}
-        scroll_by_cmd: dict = {}
+        dialogue: dict[int, TextEntry] = {}
+        scroll: dict[int, TextEntry] = {}
+        choice_by_cmd: dict[int, list] = {}
+        params_by_cmd: dict[int, list] = {}
         for entry in entries:
             meta = entry.metadata
             etype = meta.get("type")
             if etype == "dialogue":
-                dialogue_by_start[meta.get("block_start")] = entry
+                dialogue[meta.get("block_start")] = entry
+            elif etype == "scroll":
+                scroll[meta.get("block_start")] = entry
             elif etype == "choice":
                 choice_by_cmd.setdefault(meta.get("cmd_index"), []).append(entry)
-            elif etype == "scroll":
-                scroll_by_cmd[meta.get("cmd_index")] = entry
+            elif etype == "param":
+                params_by_cmd.setdefault(meta.get("cmd_index"), []).append(entry)
 
+        wrap = bool(config.get("wrap_text", True))
+        max_lines = int(config.get("max_message_lines", 4))
+
+        new_list: list = []
         i = 0
         n = len(cmd_list)
         while i < n:
             cmd = cmd_list[i]
             if not isinstance(cmd, dict):
+                new_list.append(cmd)
                 i += 1
                 continue
             code = cmd.get("code", 0)
 
-            if code == 101:
-                entry = dialogue_by_start.get(i)
-                if entry is not None:
-                    lines = entry.translation.split("\n")
-                    # Collect all consecutive 401 commands
-                    orig_401: list = []
-                    j = i + 1
-                    while j < n:
-                        nc = cmd_list[j]
-                        if isinstance(nc, dict) and nc.get("code") == 401:
-                            orig_401.append(nc)
-                            j += 1
-                        else:
-                            break
-                    # Write lines back; blank out any 401 entries beyond the translation
-                    for k, nc in enumerate(orig_401):
-                        if nc.get("parameters"):
-                            nc["parameters"][0] = lines[k] if k < len(lines) else ""
+            for entry in params_by_cmd.get(i, []):
+                idx = entry.metadata.get("param_index", 1)
+                params = cmd.get("parameters")
+                if isinstance(params, list) and idx < len(params):
+                    params[idx] = entry.translation
 
-            elif code == 102:
-                for entry in choice_by_cmd.get(i, []):
-                    c_idx = entry.metadata.get("choice_index", 0)
-                    params = cmd.get("parameters", [])
-                    if params and isinstance(params[0], list) and c_idx < len(params[0]):
-                        params[0][c_idx] = entry.translation
+            if code == CODE_SHOW_TEXT and i in dialogue:
+                _, j = self._collect_block(cmd_list, i, CODE_TEXT_LINE)
+                new_list.extend(self._rebuild_block(
+                    cmd_list, i, j, dialogue[i], CODE_TEXT_LINE, wrap, max_lines
+                ))
+                i = j
+                continue
 
-            elif code == 405:
-                entry = scroll_by_cmd.get(i)
-                if entry is not None and cmd.get("parameters"):
-                    cmd["parameters"][0] = entry.translation
+            if code == CODE_SCROLL_TEXT and i in scroll:
+                _, j = self._collect_block(cmd_list, i, CODE_SCROLL_LINE)
+                new_list.extend(self._rebuild_block(
+                    cmd_list, i, j, scroll[i], CODE_SCROLL_LINE, wrap, 0
+                ))
+                i = j
+                continue
 
+            if code == CODE_SHOW_CHOICES and i in choice_by_cmd:
+                params = cmd.get("parameters")
+                if isinstance(params, list) and params and isinstance(params[0], list):
+                    for entry in choice_by_cmd[i]:
+                        c_idx = entry.metadata.get("choice_index", 0)
+                        if 0 <= c_idx < len(params[0]):
+                            params[0][c_idx] = entry.translation
+
+            new_list.append(cmd)
             i += 1
+
+        holder["list"] = new_list
+
+    def _rebuild_block(
+        self, cmd_list: list, start: int, end: int, entry: TextEntry,
+        line_code: int, wrap: bool, max_lines: int,
+    ) -> list:
+        """Return the replacement commands for the message block [start, end)."""
+        header = cmd_list[start]
+        originals = [cmd_list[k] for k in range(start + 1, end)]
+        indent = header.get("indent", 0)
+
+        text = entry.translation
+        if wrap:
+            pages = layout_message(text, self.version, max_lines)
+        else:
+            lines = text.split("\n")
+            pages = [lines] if max_lines <= 0 else [
+                lines[k:k + max_lines] for k in range(0, len(lines), max_lines)
+            ]
+        if not pages:
+            pages = [[""]]
+
+        out: list = []
+        spare = list(originals)
+        for page_idx, lines in enumerate(pages):
+            if page_idx == 0:
+                out.append(header)
+            else:
+                out.append({
+                    "code": header.get("code", CODE_SHOW_TEXT),
+                    "indent": indent,
+                    "parameters": list(header.get("parameters", [])),
+                })
+            for line in lines:
+                if spare:
+                    cmd = spare.pop(0)
+                    params = cmd.get("parameters")
+                    if isinstance(params, list) and params:
+                        params[0] = line
+                    else:
+                        cmd["parameters"] = [line]
+                    out.append(cmd)
+                else:
+                    out.append({"code": line_code, "indent": indent, "parameters": [line]})
+        return out

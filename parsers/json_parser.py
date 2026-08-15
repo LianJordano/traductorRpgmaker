@@ -1,4 +1,4 @@
-"""Parse and write RPG Maker MV/MZ JSON data files."""
+"""Parse and write RPG Maker MV/MZ data files."""
 from __future__ import annotations
 import json
 from pathlib import Path
@@ -6,20 +6,33 @@ from typing import Any
 
 
 def load(path: Path, encoding: str = "utf-8") -> Any:
-    """Load a JSON file, trying multiple encodings if needed."""
-    for enc in [encoding, "utf-8-sig", "utf-8", "latin-1"]:
+    """Load a JSON file, trying several encodings before giving up.
+
+    Decoding is strict on purpose: replacing undecodable bytes would silently
+    swap real characters for U+FFFD and that corruption would then be written
+    straight back into the game.
+    """
+    raw = path.read_bytes()
+    last_error: Exception | None = None
+    for enc in (encoding, "utf-8-sig", "utf-8", "cp932", "cp1252"):
         try:
-            text = path.read_text(encoding=enc, errors="replace")
-            return json.loads(text)
-        except (json.JSONDecodeError, UnicodeDecodeError):
+            return json.loads(raw.decode(enc))
+        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+            last_error = exc
             continue
-    raise ValueError(f"Could not parse JSON: {path}")
+    raise ValueError(f"Could not parse JSON: {path} ({last_error})")
 
 
 def save(path: Path, data: Any, encoding: str = "utf-8") -> None:
-    """Write data back as JSON, preserving MV/MZ formatting style."""
+    """Write data back as JSON in RPG Maker's compact style.
+
+    Written through a temporary file and moved into place, so an interrupted
+    write can never leave the game with a half-written data file.
+    """
     text = json.dumps(data, ensure_ascii=False, separators=(",", ":"))
-    path.write_text(text, encoding=encoding)
+    tmp = path.with_suffix(path.suffix + ".rpgt_tmp")
+    tmp.write_text(text, encoding=encoding, newline="")
+    tmp.replace(path)
 
 
 def load_all(data_dir: Path) -> dict[str, Any]:

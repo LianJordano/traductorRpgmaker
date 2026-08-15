@@ -6,7 +6,12 @@ import time
 
 from core import logger
 from core.models import TextEntry
-from utils.text_utils import protect_game_codes, restore_game_codes
+from utils.text_utils import (
+    protect_game_codes,
+    restore_game_codes,
+    transfer_outer_spacing,
+    translation_is_safe,
+)
 
 
 class BaseTranslator(ABC):
@@ -21,6 +26,19 @@ class BaseTranslator(ABC):
         """Translate a single string. Raises on unrecoverable errors."""
         ...
 
+    def translate_protected(self, text: str) -> str:
+        """Translate one string with game codes shielded and spacing restored.
+
+        Raises ValueError if a code whose loss would change the meaning did not
+        survive, so callers can keep the original rather than ship wrong text.
+        """
+        protected, saved = protect_game_codes(text)
+        raw = self.translate_one(protected)
+        out = restore_game_codes(raw, saved)
+        if not translation_is_safe(out, saved):
+            raise ValueError(f"translation dropped game codes: {text!r}")
+        return transfer_outer_spacing(text, out)
+
     def translate_batch(
         self,
         texts: list[str],
@@ -31,9 +49,7 @@ class BaseTranslator(ABC):
         results = []
         for i, text in enumerate(texts):
             try:
-                protected, saved = protect_game_codes(text)
-                raw = self.translate_one(protected)
-                results.append(restore_game_codes(raw, saved))
+                results.append(self.translate_protected(text))
             except Exception as exc:
                 logger.error(f"Translation error on text {i}: {exc}")
                 results.append(text)  # keep original on error
@@ -59,9 +75,7 @@ class BaseTranslator(ABC):
             if cancel_flag and cancel_flag():
                 break
             try:
-                protected, saved = protect_game_codes(entry.original)
-                raw = self.translate_one(protected)
-                entry.translation = restore_game_codes(raw, saved)
+                entry.translation = self.translate_protected(entry.original)
                 entry.status = "translated"
             except Exception as exc:
                 logger.error(f"Failed to translate '{entry.uid}': {exc}")

@@ -26,6 +26,13 @@ DEFAULTS: dict[str, Any] = {
     "max_text_length": 5000,
     "skip_already_latin": False,
     "export_format": "csv",
+    # Re-wrap translated messages to the window width and split them into
+    # extra pages; without this, longer translations run off the message box.
+    "wrap_text": True,
+    "max_message_lines": 4,
+    # `note` fields are what plugins and scripts read their notetags from, so
+    # translating them usually breaks the game rather than the text.
+    "translate_notes": False,
 }
 
 _config: dict[str, Any] = {}

@@ -7,7 +7,21 @@ from typing import Optional
 from core import checkpoint, config, logger
 from core.models import ExtractionResult, WorkerMessage
 from translators.base import BaseTranslator
-from utils.text_utils import protect_game_codes, restore_game_codes
+from utils.text_utils import (
+    missing_codes,
+    protect_game_codes,
+    restore_game_codes,
+    transfer_outer_spacing,
+    translation_is_safe,
+)
+
+
+class UnsafeTranslation(Exception):
+    """Raised when a translation lost a code that changes what the text says."""
+
+    def __init__(self, lost: list[str]) -> None:
+        super().__init__("lost game codes: " + ", ".join(lost))
+        self.lost = lost
 
 
 def _build_translator(name: str, src: str, tgt: str) -> BaseTranslator:
@@ -158,7 +172,11 @@ class TranslationWorker(threading.Thread):
 
         max_workers = max(1, int(config.get("max_workers", 8)))
 
-        pending = [e for e in self.result.entries if e.status == "pending"]
+        # Entries that errored on a previous run are retried: a run is normally
+        # relaunched precisely because something failed (network, rate limit).
+        pending = [e for e in self.result.entries if e.status in ("pending", "error")]
+        for e in pending:
+            e.status = "pending"
         total = len(pending)
 
         # Deduplicate by original text. RPG games repeat names, menu terms and
@@ -204,6 +222,7 @@ class TranslationWorker(threading.Thread):
             rate limiting. Returns the translation, None if cancelled, or raises
             after exhausting retries (so the caller marks it as an error)."""
             backoff = 1.0
+            unsafe_retries_left = 1
             for attempt in range(_MAX_RETRIES + 1):
                 while self._pause.is_set() and not self._cancel.is_set():
                     time.sleep(0.2)
@@ -215,6 +234,12 @@ class TranslationWorker(threading.Thread):
                     protected, saved = protect_game_codes(text)
                     raw = get_translator().translate_one(protected)
                     out = restore_game_codes(raw, saved)
+                    # A translator that mangled a \N[1] or a <notetag> produces
+                    # text that reads plausibly but says the wrong thing, so it
+                    # must never be written into the game.
+                    if not translation_is_safe(out, saved):
+                        raise UnsafeTranslation(missing_codes(out, saved))
+                    out = transfer_outer_spacing(text, out)
                     if delay > 0:
                         time.sleep(delay / 1000)
                     raised = limiter.on_success(cap=max_workers)
@@ -222,6 +247,11 @@ class TranslationWorker(threading.Thread):
                         with log_lock:
                             self._log("INFO", f"Conexión estable: subiendo a {raised} hilos.")
                     return out
+                except UnsafeTranslation as exc:
+                    if unsafe_retries_left > 0:
+                        unsafe_retries_left -= 1
+                        continue
+                    raise
                 except Exception as exc:
                     if not _is_rate_limit(exc) or attempt >= _MAX_RETRIES:
                         raise
@@ -259,6 +289,17 @@ class TranslationWorker(threading.Thread):
                         for e in grp:
                             e.translation = translated
                             e.status = "translated"
+                except UnsafeTranslation as exc:
+                    # Leaving the original text keeps the game correct; the
+                    # entry stays visible as an error so it can be fixed by hand.
+                    with log_lock:
+                        self._log(
+                            "WARNING",
+                            f"Traducción descartada en '{grp[0].context}': el traductor "
+                            f"eliminó {', '.join(exc.lost)}. Se conserva el texto original.",
+                        )
+                    for e in grp:
+                        e.status = "error"
                 except Exception as exc:
                     logger.warning(f"Error al traducir '{grp[0].uid}': {exc}")
                     for e in grp:
