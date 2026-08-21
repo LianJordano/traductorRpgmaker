@@ -7,6 +7,7 @@ from typing import Any
 from core import config, logger
 from core.models import ExtractionResult, TextEntry
 from extractors.base import BaseExtractor
+from extractors import plugin_text
 from parsers.json_parser import load as json_load, save as json_save
 from utils.text_utils import layout_message
 
@@ -75,6 +76,16 @@ class MvMzExtractor(BaseExtractor):
                 logger.error(msg)
                 result.errors.append(msg)
 
+        if config.get("translate_plugins"):
+            try:
+                result.entries.extend(
+                    plugin_text.extract(self.data_dir, self._make_entry)
+                )
+            except Exception as exc:
+                msg = f"Error leyendo js/plugins.js: {exc}"
+                logger.error(msg)
+                result.errors.append(msg)
+
         self._progress(total, total, "Done")
         self._result = result
         return result
@@ -87,7 +98,8 @@ class MvMzExtractor(BaseExtractor):
                 by_file.setdefault(entry.file, []).append(entry)
 
         success = True
-        total_files = len(by_file)
+        plugin_entries = by_file.pop(plugin_text.PLUGINS_FILE, None)
+        total_files = len(by_file) + (1 if plugin_entries else 0)
         for idx, (filename, entries) in enumerate(by_file.items()):
             if self._cancelled():
                 logger.info("Reinsertion cancelled.")
@@ -113,6 +125,11 @@ class MvMzExtractor(BaseExtractor):
                 except Exception as restore_exc:
                     logger.error(f"Could not restore {filename}: {restore_exc}")
                 success = False
+        if plugin_entries and not self._cancelled():
+            self._progress(total_files - 1, total_files, plugin_text.PLUGINS_FILE)
+            if not plugin_text.reinsert(self.data_dir, plugin_entries):
+                success = False
+
         self._progress(total_files, total_files, "Done")
         return success
 

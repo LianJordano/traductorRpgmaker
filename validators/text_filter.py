@@ -135,3 +135,102 @@ def is_likely_japanese(text: str) -> bool:
 def filter_entries(texts: list[str]) -> list[tuple[int, str]]:
     """Return (original_index, text) pairs for only translatable entries."""
     return [(i, t) for i, t in enumerate(texts) if is_translatable(t)]
+
+
+# --------------------------------------------------------------------------- #
+# Plugin parameter values
+# --------------------------------------------------------------------------- #
+
+# A plugin's `parameters` object mixes text the player reads with values the
+# plugin's own code depends on. Translating a configuration value silently
+# changes behaviour — a font stack, an alignment keyword or a file path stops
+# resolving — so only values that clearly read as prose are accepted.
+
+# Single bare token: `png`, `left`, `GameFont`, `true`.
+_SINGLE_TOKEN = re.compile(r"^[A-Za-z_][A-Za-z0-9_.\-]*$")
+# Numbers, percentages, key codes, coordinate pairs.
+_CONFIG_NUMBER = re.compile(r"^[-+]?\d+(?:\.\d+)?%?$")
+_BOOLEAN_LIKE = {"true", "false", "on", "off", "null", "none", "undefined", "yes", "no"}
+
+# Plugins routinely express a boolean or an enum in Japanese and then compare the
+# parameter against that exact literal (`if (param === 'いいえ')`). Translating
+# one silently flips the setting, so the whole vocabulary is refused.
+_ENUM_WORDS = {
+    "はい", "いいえ", "オン", "オフ", "有効", "無効", "する", "しない",
+    "あり", "なし", "表示", "非表示", "使用する", "使用しない", "使用",
+    "左", "右", "中央", "上", "下", "中", "前", "後", "縦", "横",
+    "通常", "自動", "手動", "常時", "無し", "有り", "全て", "個別",
+    "左寄せ", "右寄せ", "中央寄せ", "デフォルト", "カスタム",
+    "enable", "disable", "enabled", "disabled", "auto", "manual",
+    "default", "custom", "always", "never", "center", "middle",
+}
+
+# A comma-separated list with no spaces at all is an identifier or alias list
+# (`particle,パーティクル` registers a plugin command under both names), not a
+# sentence a player reads.
+_ALIAS_LIST = re.compile(r"^[^\s,]+(?:,[^\s,]+)+$")
+# CSS-ish values that must survive untouched.
+_CSS_VALUE = re.compile(
+    r"sans-serif|monospace|\bserif\b|cursive|fantasy|rgba?\(|^#[0-9A-Fa-f]{3,8}$",
+    re.IGNORECASE,
+)
+# A comma-separated list of plain tokens: font stacks, id lists, key names.
+_TOKEN_LIST = re.compile(r"^[A-Za-z0-9 ,._\-]+$")
+# Script or template fragments.
+_SCRIPT_FRAGMENT = re.compile(r"\$game|\bthis\.|=>|\$\{|\bfunction\b|;\s*$|\breturn\b")
+
+# Many plugins accept a JavaScript expression where a plain value would fit —
+# `Graphics.boxWidth - 350`, `f * 0.4`, `Input.isPressed('control') && ...`.
+# These read as text to a naive filter, and translating one breaks the plugin.
+# A dotted identifier chain (no spaces around the dot, lowercase continuation)
+# is the reliable tell, since prose puts a space after a full stop.
+_DOTTED_IDENTIFIER = re.compile(r"[A-Za-z_$][A-Za-z0-9_$]*\.[a-z_$][A-Za-z0-9_$]+")
+# Operators applied between identifiers or numbers.
+_EXPRESSION_OP = re.compile(
+    r"&&|\|\||[=!]==|[\w)\]]\s*[*/]\s*[\w(]|[\w)\]]\s{0,3}[+\-]\s{0,3}[\w(]"
+)
+# Anything with a path separator or a file extension.
+_PATHLIKE = re.compile(r"[/\\]|\.[A-Za-z0-9]{2,4}$")
+
+
+def is_plugin_value_translatable(value: str) -> bool:
+    """True if a plugin parameter value is text the player reads.
+
+    Deliberately conservative: a value is only accepted when it reads as a
+    phrase (contains a space or sentence punctuation) or contains non-Latin
+    script, which is what distinguishes `"描画FPSの設定"` and `"A lotta"` from
+    `"png"`, `"left"` and `"SimHei, Heiti TC, sans-serif"`.
+    """
+    if not value or not isinstance(value, str):
+        return False
+    t = value.strip()
+    if len(t) < 2:
+        return False
+    if t.lower() in _BOOLEAN_LIKE or t in _ENUM_WORDS or t.lower() in _ENUM_WORDS:
+        return False
+    if _ALIAS_LIST.match(t):
+        return False
+    if _CONFIG_NUMBER.match(t):
+        return False
+    if _CSS_VALUE.search(t):
+        return False
+    if _SCRIPT_FRAGMENT.search(t):
+        return False
+    if _DOTTED_IDENTIFIER.search(t) or _EXPRESSION_OP.search(t):
+        return False
+    if _PATHLIKE.search(t):
+        return False
+    if _SINGLE_TOKEN.match(t):
+        return False
+    if "," in t and _TOKEN_LIST.match(t):
+        return False
+    if not is_translatable(t):
+        return False
+    # Must read as prose: a phrase, a sentence, or non-Latin script.
+    if _CJK_RE.search(t):
+        return True
+    if any(ord(ch) > 0x2000 and not _CJK_RE.match(ch) for ch in t):
+        # Cyrillic, Greek, Hangul and other non-Latin scripts.
+        if any(unicodedata.category(ch).startswith("L") and ord(ch) > 0x2FF for ch in t):
+            return True
+    return bool(re.search(r"\s", t) or re.search(r"[.!?…:;、。！？]", t))

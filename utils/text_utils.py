@@ -38,7 +38,8 @@ def restore_rpg_codes(text: str, codes: list[tuple[int, str]]) -> str:
 # Multi-letter codes MUST be matched before single-letter ones, otherwise `\SE[5]`
 # is protected as `\S` and the translator is free to mangle the leftover `E[5]`.
 _PROTECT_RE = re.compile(
-    r"<[^\s<>\n][^<>\n]{0,99}>"           # notetags / inline tags
+    r"#\{[^}\n]{0,120}\}"                 # Ruby interpolation: #{actor.name}
+    r"|<[^\s<>\n][^<>\n]{0,99}>"          # notetags / inline tags
     r"|\\[A-Za-z]+\[[^\]\n]{0,40}\]"      # \C[1], \V[10], \SE[5], \N[1]
     r"|\\[A-Za-z]{2,}"                    # \FS, \AF (no argument)
     r"|\\[A-Za-z!|.><^{}$\\]"             # \n \. \| \! \> \< \^ \{ \} \$ \\

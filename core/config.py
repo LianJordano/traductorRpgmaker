@@ -33,6 +33,10 @@ DEFAULTS: dict[str, Any] = {
     # `note` fields are what plugins and scripts read their notetags from, so
     # translating them usually breaks the game rather than the text.
     "translate_notes": False,
+    # Translate the parameter values of MV/MZ plugins (js/plugins.js) and the
+    # display strings of VX/VX Ace/XP scripts. Off by default: these files drive
+    # game mechanics, so only clearly player-facing text is ever touched.
+    "translate_plugins": False,
     # Backups: the untranslated `original_` copy is always kept; this is how
     # many later copies to retain on top of it. They are stored compressed.
     "backup_keep": 1,

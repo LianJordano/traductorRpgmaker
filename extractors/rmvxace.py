@@ -10,6 +10,7 @@ from typing import Any, Optional
 from core import config, logger
 from core.models import ExtractionResult, TextEntry
 from extractors.base import BaseExtractor
+from extractors import script_text
 from parsers import marshal_parser as mp
 from utils.text_utils import layout_message
 
@@ -157,6 +158,16 @@ class VXAceExtractor(BaseExtractor):
                 logger.success(f"  → {len(entries)} texts from {fpath.name}")
             except Exception as exc:
                 msg = f"Error in {fpath.name}: {exc}"
+                logger.error(msg)
+                result.errors.append(msg)
+
+        if config.get("translate_plugins"):
+            try:
+                result.entries.extend(
+                    script_text.extract(self.data_dir, self.EXT, self._make_entry)
+                )
+            except Exception as exc:
+                msg = f"Error leyendo Scripts{self.EXT}: {exc}"
                 logger.error(msg)
                 result.errors.append(msg)
 
@@ -456,7 +467,8 @@ class VXAceExtractor(BaseExtractor):
                 by_file.setdefault(entry.file, []).append(entry)
 
         success = True
-        total = len(by_file)
+        script_entries = by_file.pop(f"Scripts{self.EXT}", None)
+        total = len(by_file) + (1 if script_entries else 0)
         for idx, (filename, entries) in enumerate(by_file.items()):
             if self._cancelled():
                 logger.info("Reinsertion cancelled.")
@@ -488,6 +500,12 @@ class VXAceExtractor(BaseExtractor):
                 except Exception as restore_exc:
                     logger.error(f"Could not restore {filename}: {restore_exc}")
                 success = False
+
+        if script_entries and not self._cancelled():
+            self._progress(max(0, total - 1), total, f"Scripts{self.EXT}")
+            if not script_text.reinsert(self.data_dir, self.EXT, script_entries):
+                success = False
+
         self._progress(total, total, "Done")
         return success
 

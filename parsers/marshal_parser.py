@@ -48,11 +48,35 @@ _FIXNUM_MAX = 2 ** 30 - 1
 _FIXNUM_MIN = -(2 ** 30)
 
 
+class RawString:
+    """A Ruby String kept as raw bytes together with its instance variables.
+
+    `Scripts.rvdata2` stores each script as zlib-compressed bytes inside a Ruby
+    String that carries a UTF-8 marker. Letting the normal path decode and
+    re-encode it corrupts the blob, so it is carried through untouched and
+    written back exactly as it arrived.
+    """
+
+    __slots__ = ("data", "attributes")
+
+    def __init__(self, data: bytes, attributes: Optional[dict] = None) -> None:
+        self.data = data
+        self.attributes = dict(attributes or {})
+
+    def __len__(self) -> int:
+        return len(self.data)
+
+    def __repr__(self) -> str:
+        return f"RawString({len(self.data)} bytes)"
+
+
 def _is_link_scalar(obj: Any) -> bool:
     """True for values Ruby stores as linkable objects but rubymarshal's writer
     forgets to register (see _LinkSafeWriter)."""
     if isinstance(obj, bool) or obj is None:
         return False
+    if isinstance(obj, RawString):
+        return True
     if isinstance(obj, bytes) or isinstance(obj, float):
         return True
     if _RUBYMARSHAL_OK and isinstance(obj, RubyString):
@@ -119,6 +143,8 @@ if _RUBYMARSHAL_OK:
         def write(self, obj):
             if obj is None or obj is True or obj is False or isinstance(obj, Symbol):
                 return super().write(obj)
+            if isinstance(obj, RawString):
+                return self._write_scalar(obj, lambda: self._write_raw(obj))
             if isinstance(obj, bytes):
                 return self._write_scalar(obj, lambda: _writer.Writer.write_bytes(self, obj))
             if isinstance(obj, str) and not isinstance(obj, RubyString):
@@ -128,6 +154,14 @@ if _RUBYMARSHAL_OK:
             if isinstance(obj, int) and not (_FIXNUM_MIN <= obj <= _FIXNUM_MAX):
                 return self._write_scalar(obj, lambda: self._write_bignum(obj))
             return super().write(obj)
+
+        def _write_raw(self, obj: "RawString") -> None:
+            """Emit a byte string with its instance variables, unconverted."""
+            if obj.attributes:
+                self.fd.write(_writer.TYPE_IVAR)
+            _writer.Writer.write_bytes(self, obj.data)
+            if obj.attributes:
+                self.write_attributes(obj.attributes)
 
         def _write_bignum(self, obj: int) -> None:
             import math
