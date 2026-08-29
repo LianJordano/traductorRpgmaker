@@ -2,7 +2,7 @@
 from __future__ import annotations
 import customtkinter as ctk
 from gui.styles import theme
-from core import config
+from core import checkpoint, config
 
 TRANSLATORS = ["google", "deepl", "openai", "manual"]
 LANGUAGES = {
@@ -205,12 +205,43 @@ class SettingsPanel(ctk.CTkScrollableFrame):
                                     number_of_steps=31),
         )
 
+        # Checkpoint cache: show what it costs on disk and let it be wiped here,
+        # so a game can be re-translated from scratch without hunting for files.
+        self._cache_btn = ctk.CTkButton(
+            self, text="", height=theme.BTN_H, font=theme.FONT_BODY,
+            fg_color=theme.WARNING, text_color=theme.BG_PRIMARY,
+            command=self._clear_checkpoints,
+        )
+        self._cache_btn.pack(fill="x", padx=6, pady=(10, 2))
+        ctk.CTkLabel(
+            self, text=f"Carpeta: {checkpoint.CHECKPOINT_DIR}",
+            font=theme.FONT_SMALL,
+            text_color=theme.TEXT_MUTED, anchor="w", wraplength=340, justify="left",
+        ).pack(fill="x", padx=6)
+        self._refresh_cache_btn()
+
         # Save button
         ctk.CTkButton(
             self, text="Guardar Configuración", height=theme.BTN_H,
             font=theme.FONT_BODY, fg_color=theme.SUCCESS,
             command=self.save,
         ).pack(fill="x", padx=6, pady=16)
+
+    def _refresh_cache_btn(self) -> None:
+        count, size = checkpoint.usage()
+        text = f"Limpiar traducciones ejecutadas ({count} juegos, {size / (1024*1024):.1f} MB)"
+        # Count the other install's folder too, or its size stays invisible here.
+        other = sum(checkpoint.dir_usage(d)[1] for d in checkpoint.sibling_dirs())
+        if other:
+            text += f" + {other / (1024*1024):.1f} MB en otra carpeta"
+        self._cache_btn.configure(text=text)
+
+    def _clear_checkpoints(self) -> None:
+        """Open the cleaner rather than wiping everything on a single click."""
+        from gui.components.cleanup_dialog import CleanupDialog
+        dialog = CleanupDialog(self.winfo_toplevel())
+        # Refresh the button's counter once the cleaner is closed.
+        dialog.bind("<Destroy>", lambda e: e.widget is dialog and self._refresh_cache_btn())
 
     def _on_translator_change(self, _=None) -> None:
         pass

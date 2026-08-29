@@ -154,6 +154,17 @@ class MainWindow(ctk.CTk):
             command=self._show_about,
         ).pack(side="right", padx=8, pady=10)
 
+        ctk.CTkButton(
+            bar, text="Limpiar traducciones", width=150, height=30,
+            font=theme.FONT_SMALL, fg_color=theme.BG_CARD,
+            command=self._open_cleanup,
+        ).pack(side="right", padx=0, pady=10)
+
+    def _open_cleanup(self) -> None:
+        """Show the checkpoint cleaner (also reachable from the settings tab)."""
+        from gui.components.cleanup_dialog import CleanupDialog
+        CleanupDialog(self)
+
     def _build_tabs(self, parent) -> None:
         self._tabs = ctk.CTkTabview(
             parent, fg_color=theme.BG_SECONDARY,

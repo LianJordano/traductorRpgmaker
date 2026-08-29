@@ -19,6 +19,9 @@ DIST_EXE = DIST_DIR / "RPGTranslatorPro.exe"
 BUILD = ROOT / "build"
 ICON = ROOT / "assets" / "icon.ico"
 
+#: Lives in dist/ but is user data, not build output — see the cleaning step.
+KEEP_IN_DIST = "traducciones_ejecutadas"
+
 
 def step(msg: str) -> None:
     print(f"\n{'-'*60}")
@@ -48,11 +51,29 @@ def main() -> None:
         print(f"  Icon already exists: {ICON}")
 
     # 2. Clean previous builds
+    #
+    # `dist/` is not wiped wholesale: the checkpoint folder lives next to the
+    # .exe, and an unapplied translation exists nowhere else on disk, so a
+    # rebuild used to throw away hours of work. Only build output is removed.
     step("Cleaning previous build artifacts...")
-    for path in [DIST_DIR, BUILD]:
-        if path.exists():
-            shutil.rmtree(path)
-            print(f"  Removed: {path}")
+    if BUILD.exists():
+        shutil.rmtree(BUILD)
+        print(f"  Removed: {BUILD}")
+
+    if DIST_DIR.exists():
+        for path in DIST_DIR.iterdir():
+            if path.name == KEEP_IN_DIST:
+                count = len(list(path.glob("*.json")))
+                print(f"  Kept   : {path.name} ({count} punto(s) de control)")
+                continue
+            try:
+                shutil.rmtree(path) if path.is_dir() else path.unlink()
+                print(f"  Removed: {path}")
+            except OSError as exc:
+                print(f"\nERROR: no se pudo borrar {path}")
+                print(f"  {exc}")
+                print("  Cierra RPGTranslatorPro.exe si esta abierto y vuelve a intentarlo.")
+                sys.exit(1)
 
     # 3. Run PyInstaller
     step("Running PyInstaller...")

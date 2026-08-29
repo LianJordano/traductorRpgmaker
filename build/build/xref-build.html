@@ -3063,6 +3063,7 @@ imported by:
  &#8226;   <a href="#extractors.rmvxace">extractors.rmvxace</a>
  &#8226;   <a href="#extractors.rmxp">extractors.rmxp</a>
  &#8226;   <a href="#extractors.script_text">extractors.script_text</a>
+ &#8226;   <a href="#gui.components.cleanup_dialog">gui.components.cleanup_dialog</a>
  &#8226;   <a href="#gui.components.file_panel">gui.components.file_panel</a>
  &#8226;   <a href="#gui.components.log_panel">gui.components.log_panel</a>
  &#8226;   <a href="#gui.components.progress_panel">gui.components.progress_panel</a>
@@ -7051,6 +7052,7 @@ imported by:
  &#8226;   <a href="#extractors.rmvxace">extractors.rmvxace</a>
  &#8226;   <a href="#extractors.rmxp">extractors.rmxp</a>
  &#8226;   <a href="#extractors.script_text">extractors.script_text</a>
+ &#8226;   <a href="#gui.components.cleanup_dialog">gui.components.cleanup_dialog</a>
  &#8226;   <a href="#gui.components.file_panel">gui.components.file_panel</a>
  &#8226;   <a href="#gui.components.settings_panel">gui.components.settings_panel</a>
  &#8226;   <a href="#gui.main_window">gui.main_window</a>
@@ -7107,6 +7109,8 @@ imports:
  &#8226;   <a href="#core.logger">core.logger</a>
  &#8226;   <a href="#json">json</a>
  &#8226;   <a href="#pathlib">pathlib</a>
+ &#8226;   <a href="#re">re</a>
+ &#8226;   <a href="#sys">sys</a>
  &#8226;   <a href="#time">time</a>
  &#8226;   <a href="#typing">typing</a>
 
@@ -7114,6 +7118,8 @@ imports:
   <div class="import">
 imported by:
     <a href="#core">core</a>
+ &#8226;   <a href="#gui.components.cleanup_dialog">gui.components.cleanup_dialog</a>
+ &#8226;   <a href="#gui.components.settings_panel">gui.components.settings_panel</a>
  &#8226;   <a href="#gui.main_window">gui.main_window</a>
  &#8226;   <a href="#workers.extraction_worker">workers.extraction_worker</a>
  &#8226;   <a href="#workers.translation_worker">workers.translation_worker</a>
@@ -7204,6 +7210,7 @@ imported by:
  &#8226;   <a href="#extractors.rmmv_mz">extractors.rmmv_mz</a>
  &#8226;   <a href="#extractors.rmvxace">extractors.rmvxace</a>
  &#8226;   <a href="#extractors.script_text">extractors.script_text</a>
+ &#8226;   <a href="#gui.components.cleanup_dialog">gui.components.cleanup_dialog</a>
  &#8226;   <a href="#gui.components.settings_panel">gui.components.settings_panel</a>
  &#8226;   <a href="#gui.main_window">gui.main_window</a>
  &#8226;   <a href="#importers.csv_importer">importers.csv_importer</a>
@@ -7500,6 +7507,7 @@ imported by:
     <a href="#customtkinter">customtkinter</a>
  &#8226;   <a href="#customtkinter.windows">customtkinter.windows</a>
  &#8226;   <a href="#customtkinter.windows.widgets.core_widget_classes.ctk_base_class">customtkinter.windows.widgets.core_widget_classes.ctk_base_class</a>
+ &#8226;   <a href="#gui.components.cleanup_dialog">gui.components.cleanup_dialog</a>
  &#8226;   <a href="#gui.components.file_panel">gui.components.file_panel</a>
  &#8226;   <a href="#gui.components.log_panel">gui.components.log_panel</a>
  &#8226;   <a href="#gui.components.progress_panel">gui.components.progress_panel</a>
@@ -13324,10 +13332,40 @@ imports:
   </div>
   <div class="import">
 imported by:
-    <a href="#gui.components.file_panel">gui.components.file_panel</a>
+    <a href="#gui.components.cleanup_dialog">gui.components.cleanup_dialog</a>
+ &#8226;   <a href="#gui.components.file_panel">gui.components.file_panel</a>
  &#8226;   <a href="#gui.components.log_panel">gui.components.log_panel</a>
  &#8226;   <a href="#gui.components.progress_panel">gui.components.progress_panel</a>
  &#8226;   <a href="#gui.components.settings_panel">gui.components.settings_panel</a>
+
+  </div>
+
+</div>
+
+<div class="node">
+  <a name="gui.components.cleanup_dialog"></a>
+  <a target="code" href="///D:/1rpgtraductor/gui/components/cleanup_dialog.py" type="text/plain"><tt>gui.components.cleanup_dialog</tt></a>
+<span class="moduletype">SourceModule</span>  <div class="import">
+imports:
+    <a href="#__future__">__future__</a>
+ &#8226;   <a href="#core">core</a>
+ &#8226;   <a href="#core.checkpoint">core.checkpoint</a>
+ &#8226;   <a href="#core.logger">core.logger</a>
+ &#8226;   <a href="#customtkinter">customtkinter</a>
+ &#8226;   <a href="#gui.components">gui.components</a>
+ &#8226;   <a href="#gui.styles">gui.styles</a>
+ &#8226;   <a href="#gui.styles.theme">gui.styles.theme</a>
+ &#8226;   <a href="#os">os</a>
+ &#8226;   <a href="#subprocess">subprocess</a>
+ &#8226;   <a href="#sys">sys</a>
+ &#8226;   <a href="#time">time</a>
+ &#8226;   <a href="#tkinter.messagebox">tkinter.messagebox</a>
+
+  </div>
+  <div class="import">
+imported by:
+    <a href="#gui.components.settings_panel">gui.components.settings_panel</a>
+ &#8226;   <a href="#gui.main_window">gui.main_window</a>
 
   </div>
 
@@ -13407,10 +13445,12 @@ imported by:
 imports:
     <a href="#__future__">__future__</a>
  &#8226;   <a href="#core">core</a>
+ &#8226;   <a href="#core.checkpoint">core.checkpoint</a>
  &#8226;   <a href="#core.config">core.config</a>
  &#8226;   <a href="#core.logger">core.logger</a>
  &#8226;   <a href="#customtkinter">customtkinter</a>
  &#8226;   <a href="#gui.components">gui.components</a>
+ &#8226;   <a href="#gui.components.cleanup_dialog">gui.components.cleanup_dialog</a>
  &#8226;   <a href="#gui.styles">gui.styles</a>
  &#8226;   <a href="#gui.styles.theme">gui.styles.theme</a>
 
@@ -13441,6 +13481,7 @@ imports:
  &#8226;   <a href="#exporters.excel_exporter">exporters.excel_exporter</a>
  &#8226;   <a href="#exporters.json_exporter">exporters.json_exporter</a>
  &#8226;   <a href="#gui">gui</a>
+ &#8226;   <a href="#gui.components.cleanup_dialog">gui.components.cleanup_dialog</a>
  &#8226;   <a href="#gui.components.file_panel">gui.components.file_panel</a>
  &#8226;   <a href="#gui.components.log_panel">gui.components.log_panel</a>
  &#8226;   <a href="#gui.components.progress_panel">gui.components.progress_panel</a>
@@ -13486,7 +13527,8 @@ imports:
   </div>
   <div class="import">
 imported by:
-    <a href="#gui.components.file_panel">gui.components.file_panel</a>
+    <a href="#gui.components.cleanup_dialog">gui.components.cleanup_dialog</a>
+ &#8226;   <a href="#gui.components.file_panel">gui.components.file_panel</a>
  &#8226;   <a href="#gui.components.log_panel">gui.components.log_panel</a>
  &#8226;   <a href="#gui.components.progress_panel">gui.components.progress_panel</a>
  &#8226;   <a href="#gui.components.settings_panel">gui.components.settings_panel</a>
@@ -13509,7 +13551,8 @@ imports:
   </div>
   <div class="import">
 imported by:
-    <a href="#gui.components.file_panel">gui.components.file_panel</a>
+    <a href="#gui.components.cleanup_dialog">gui.components.cleanup_dialog</a>
+ &#8226;   <a href="#gui.components.file_panel">gui.components.file_panel</a>
  &#8226;   <a href="#gui.components.log_panel">gui.components.log_panel</a>
  &#8226;   <a href="#gui.components.progress_panel">gui.components.progress_panel</a>
  &#8226;   <a href="#gui.components.settings_panel">gui.components.settings_panel</a>
@@ -14021,6 +14064,7 @@ imports:
  &#8226;   <a href="#importlib._bootstrap_external">importlib._bootstrap_external</a>
  &#8226;   <a href="#importlib._common">importlib._common</a>
  &#8226;   <a href="#importlib.abc">importlib.abc</a>
+ &#8226;   <a href="#importlib.machinery">importlib.machinery</a>
  &#8226;   <a href="#sys">sys</a>
  &#8226;   <a href="#warnings">warnings</a>
 
@@ -14209,6 +14253,7 @@ imports:
   <div class="import">
 imported by:
     <a href="#ctypes.util">ctypes.util</a>
+ &#8226;   <a href="#importlib">importlib</a>
  &#8226;   <a href="#importlib.abc">importlib.abc</a>
  &#8226;   <a href="#importlib.resources">importlib.resources</a>
  &#8226;   <a href="#inspect">inspect</a>
@@ -20936,6 +20981,7 @@ imported by:
  &#8226;   <a href="#getpass">getpass</a>
  &#8226;   <a href="#gettext">gettext</a>
  &#8226;   <a href="#glob">glob</a>
+ &#8226;   <a href="#gui.components.cleanup_dialog">gui.components.cleanup_dialog</a>
  &#8226;   <a href="#gui.components.file_panel">gui.components.file_panel</a>
  &#8226;   <a href="#gui.main_window">gui.main_window</a>
  &#8226;   <a href="#gzip">gzip</a>
@@ -21799,6 +21845,7 @@ imported by:
  &#8226;   <a href="#charset_normalizer.constant">charset_normalizer.constant</a>
  &#8226;   <a href="#charset_normalizer.models">charset_normalizer.models</a>
  &#8226;   <a href="#charset_normalizer.utils">charset_normalizer.utils</a>
+ &#8226;   <a href="#core.checkpoint">core.checkpoint</a>
  &#8226;   <a href="#csv">csv</a>
  &#8226;   <a href="#ctypes._aix">ctypes._aix</a>
  &#8226;   <a href="#ctypes.macholib.dylib">ctypes.macholib.dylib</a>
@@ -23389,6 +23436,7 @@ imported by:
  &#8226;   <a href="#ctypes.util">ctypes.util</a>
  &#8226;   <a href="#darkdetect._linux_detect">darkdetect._linux_detect</a>
  &#8226;   <a href="#darkdetect._mac_detect">darkdetect._mac_detect</a>
+ &#8226;   <a href="#gui.components.cleanup_dialog">gui.components.cleanup_dialog</a>
  &#8226;   <a href="#gui.main_window">gui.main_window</a>
  &#8226;   <a href="#http.server">http.server</a>
  &#8226;   <a href="#multiprocessing.util">multiprocessing.util</a>
@@ -23448,6 +23496,7 @@ imported by:
  &#8226;   <a href="#concurrent.futures.process">concurrent.futures.process</a>
  &#8226;   <a href="#contextlib">contextlib</a>
  &#8226;   <a href="#core.backup">core.backup</a>
+ &#8226;   <a href="#core.checkpoint">core.checkpoint</a>
  &#8226;   <a href="#ctypes">ctypes</a>
  &#8226;   <a href="#ctypes._aix">ctypes._aix</a>
  &#8226;   <a href="#ctypes._endian">ctypes._endian</a>
@@ -23497,6 +23546,7 @@ imported by:
  &#8226;   <a href="#getpass">getpass</a>
  &#8226;   <a href="#gettext">gettext</a>
  &#8226;   <a href="#glob">glob</a>
+ &#8226;   <a href="#gui.components.cleanup_dialog">gui.components.cleanup_dialog</a>
  &#8226;   <a href="#gzip">gzip</a>
  &#8226;   <a href="#http.client">http.client</a>
  &#8226;   <a href="#http.server">http.server</a>
@@ -23813,6 +23863,7 @@ imported by:
  &#8226;   <a href="#email.generator">email.generator</a>
  &#8226;   <a href="#email.utils">email.utils</a>
  &#8226;   <a href="#gc">gc</a>
+ &#8226;   <a href="#gui.components.cleanup_dialog">gui.components.cleanup_dialog</a>
  &#8226;   <a href="#gui.components.progress_panel">gui.components.progress_panel</a>
  &#8226;   <a href="#gui.main_window">gui.main_window</a>
  &#8226;   <a href="#gzip">gzip</a>
@@ -24014,7 +24065,8 @@ imports:
   </div>
   <div class="import">
 imported by:
-    <a href="#gui.main_window">gui.main_window</a>
+    <a href="#gui.components.cleanup_dialog">gui.components.cleanup_dialog</a>
+ &#8226;   <a href="#gui.main_window">gui.main_window</a>
  &#8226;   <a href="#main.py">main.py</a>
  &#8226;   <a href="#tkinter">tkinter</a>
  &#8226;   <a href="#tkinter.simpledialog">tkinter.simpledialog</a>
