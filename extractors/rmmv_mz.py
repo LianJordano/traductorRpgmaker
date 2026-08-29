@@ -61,12 +61,16 @@ class MvMzExtractor(BaseExtractor):
         )
         files = self._get_target_files()
         total = len(files)
-        # Strings the game's own scripts look up by value must not be renamed.
-        try:
-            self._guard = build_reference_guard(self.data_dir)
-        except Exception:
-            self._guard = None
+        # Locking text that scripts look up by value is part of the
+        # plugin-aware mode. With the switch off the run behaves exactly as it
+        # always has, which is what makes the setting predictable.
+        self._guard = None
         self._locked = 0
+        if config.get("translate_plugins"):
+            try:
+                self._guard = build_reference_guard(self.data_dir)
+            except Exception:
+                self._guard = None
 
         for idx, fpath in enumerate(files):
             if self._cancelled():
