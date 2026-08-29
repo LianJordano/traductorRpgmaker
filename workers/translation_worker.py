@@ -58,6 +58,12 @@ def _is_rate_limit(exc: Exception) -> bool:
     return any(hint in msg for hint in _RATE_LIMIT_HINTS)
 
 
+#: Consecutive successes needed before the concurrency limit steps back up.
+#: Halving is instant, so recovery this slow meant a single bad patch could keep
+#: a whole run pinned at one thread long after the service had recovered.
+_RECOVER_STREAK = 8
+
+
 class AdaptiveLimiter:
     """Gates concurrent API calls with a limit that can shrink under rate
     limiting and slowly recover. Acts as a resizable semaphore so the worker
@@ -100,7 +106,7 @@ class AdaptiveLimiter:
         toward `cap`. Returns the new limit if it changed."""
         with self._cond:
             self._ok_streak += 1
-            if self._ok_streak >= 25 and self._limit < cap:
+            if self._ok_streak >= _RECOVER_STREAK and self._limit < cap:
                 self._ok_streak = 0
                 self._limit += 1
                 self._cond.notify()
@@ -109,6 +115,26 @@ class AdaptiveLimiter:
 
 
 _MAX_RETRIES = 6  # retries per text on rate-limit before giving up
+
+#: The first pass gives up early on purpose. Six retries with exponential
+#: backoff is a minute of waiting per text, and while Google is throttling most
+#: of that minute is wasted — the string is far more likely to succeed later,
+#: alone, in the sweep. Completeness comes from the sweep, not from grinding
+#: every text to exhaustion on the first try.
+_FIRST_PASS_RETRIES = 3
+
+#: How many single-threaded sweeps to run over whatever is still missing.
+_SWEEP_ROUNDS = 3
+
+#: Retries per text inside a sweep. Deliberately lower than _MAX_RETRIES: what
+#: clears a rate limit is elapsed time, and the pause between rounds already
+#: provides it. Grinding each text through the full backoff on top only makes a
+#: hopeless string cost a minute instead of fifteen seconds.
+_SWEEP_RETRIES = 4
+
+#: Pause before a sweep, multiplied by the round number (30s, 60s, 90s). Rate
+#: limits are time-based, so waiting is the one thing that reliably clears them.
+_SWEEP_PAUSE_S = 30
 
 
 class TranslationWorker(threading.Thread):
@@ -229,19 +255,23 @@ class TranslationWorker(threading.Thread):
                 time.sleep(min(0.2, seconds - slept))
                 slept += 0.2
 
-        def work(text: str):
+        def work(text: str, max_retries: int = _MAX_RETRIES):
             """Translate one unique text with adaptive concurrency + backoff on
             rate limiting. Returns the translation, None if cancelled, or raises
             after exhausting retries (so the caller marks it as an error)."""
             backoff = 1.0
             unsafe_retries_left = 1
+            # The concurrency cut is per text, not per attempt. Halving on every
+            # attempt let one stubborn string drop the pool from 8 threads to 1
+            # on its own, and the whole run then crawled behind it.
+            lowered_once = False
             # Decided once per text, not per attempt, so a retried string is
             # not counted twice in the summary.
             lang = detect_source_language(text, src)
             if lang != src:
                 with routed_lock:
                     routed[lang] = routed.get(lang, 0) + 1
-            for attempt in range(_MAX_RETRIES + 1):
+            for attempt in range(max_retries + 1):
                 while self._pause.is_set() and not self._cancel.is_set():
                     time.sleep(0.2)
                 if self._cancel.is_set():
@@ -273,14 +303,16 @@ class TranslationWorker(threading.Thread):
                     raise
                 except Exception as exc:
                     retryable = _is_rate_limit(exc) or isinstance(exc, TranslationUnavailable)
-                    if not retryable or attempt >= _MAX_RETRIES:
+                    if not retryable or attempt >= max_retries:
                         raise
-                    lowered = limiter.decrease()
-                    if lowered is not None:
-                        with log_lock:
-                            self._log("WARNING",
-                                      f"Límite de peticiones detectado — reduciendo a {lowered} "
-                                      f"hilos y reintentando.")
+                    if not lowered_once:
+                        lowered_once = True
+                        lowered = limiter.decrease()
+                        if lowered is not None:
+                            with log_lock:
+                                self._log("WARNING",
+                                          f"Límite de peticiones detectado — reduciendo a {lowered} "
+                                          f"hilos y reintentando.")
                 finally:
                     limiter.release()
 
@@ -297,48 +329,96 @@ class TranslationWorker(threading.Thread):
         last_checkpoint = time.monotonic()
         completed_entries = 0
 
-        pool = ThreadPoolExecutor(max_workers=max_workers)
-        try:
-            futures = {pool.submit(work, text): text for text in unique_texts}
-            for fut in as_completed(futures):
-                text = futures[fut]
-                grp = groups[text]
-                try:
-                    translated = fut.result()
-                    if translated is not None:
+        def run_pass(texts: list[str], workers: int, retries: int) -> list[str]:
+            """Translate `texts`, returning the ones that did not make it.
+
+            Failures are reported rather than swallowed so the caller can retry
+            them; the goal is a run that ends with nothing left untranslated.
+            """
+            nonlocal completed_entries, last_checkpoint
+            failed: list[str] = []
+            pool = ThreadPoolExecutor(max_workers=workers)
+            try:
+                futures = {pool.submit(work, text, retries): text for text in texts}
+                for fut in as_completed(futures):
+                    text = futures[fut]
+                    grp = groups[text]
+                    try:
+                        translated = fut.result()
+                        if translated is not None:
+                            for e in grp:
+                                e.translation = translated
+                                e.status = "translated"
+                    except UnsafeTranslation as exc:
+                        # Leaving the original text keeps the game correct; the
+                        # entry stays visible as an error so it can be fixed by
+                        # hand. Retrying is pointless: the guard would reject it
+                        # again for the same reason.
+                        with log_lock:
+                            self._log(
+                                "WARNING",
+                                f"Traducción descartada en '{grp[0].context}': el traductor "
+                                f"eliminó {', '.join(exc.lost)}. Se conserva el texto original.",
+                            )
                         for e in grp:
-                            e.translation = translated
-                            e.status = "translated"
-                except UnsafeTranslation as exc:
-                    # Leaving the original text keeps the game correct; the
-                    # entry stays visible as an error so it can be fixed by hand.
-                    with log_lock:
-                        self._log(
-                            "WARNING",
-                            f"Traducción descartada en '{grp[0].context}': el traductor "
-                            f"eliminó {', '.join(exc.lost)}. Se conserva el texto original.",
-                        )
-                    for e in grp:
-                        e.status = "error"
-                except Exception as exc:
-                    logger.warning(f"Error al traducir '{grp[0].uid}': {exc}")
-                    for e in grp:
-                        e.status = "error"
+                            e.status = "error"
+                    except Exception as exc:
+                        logger.warning(f"Error al traducir '{grp[0].uid}': {exc}")
+                        for e in grp:
+                            e.status = "error"
+                        failed.append(text)
 
-                completed_entries += len(grp)
-                self._emit(WorkerMessage.progress(completed_entries, total, grp[0].file))
+                    completed_entries += len(grp)
+                    self._emit(WorkerMessage.progress(completed_entries, total, grp[0].file))
 
-                now = time.monotonic()
-                if config.get("checkpoint_enabled") and now - last_checkpoint >= checkpoint_interval_s:
-                    checkpoint.save(self.result.game_path, self.result.to_dict())
-                    last_checkpoint = now
+                    now = time.monotonic()
+                    if config.get("checkpoint_enabled") and now - last_checkpoint >= checkpoint_interval_s:
+                        checkpoint.save(self.result.game_path, self.result.to_dict())
+                        last_checkpoint = now
 
-                if self._cancel.is_set():
-                    self._log("INFO", "Traducción cancelada.")
-                    break
-        finally:
-            # cancel_futures stops queued-but-not-started tasks immediately
-            pool.shutdown(wait=False, cancel_futures=True)
+                    if self._cancel.is_set():
+                        self._log("INFO", "Traducción cancelada.")
+                        break
+            finally:
+                # cancel_futures stops queued-but-not-started tasks immediately
+                pool.shutdown(wait=False, cancel_futures=True)
+            return failed
+
+        # First pass: fast, with a short retry budget. A text that loses here is
+        # almost always a throttled one, and hammering it now only deepens the
+        # throttling — the sweep below is where it gets its real chance.
+        pending_texts = run_pass(unique_texts, max_workers, _FIRST_PASS_RETRIES)
+
+        # Sweeps: whatever is left is retried single file, with the full retry
+        # budget and a pause between rounds to let the service breathe. This is
+        # what turns "22 textos quedaron sin traducir" into a finished run.
+        for round_no in range(1, _SWEEP_ROUNDS + 1):
+            if not pending_texts or self._cancel.is_set():
+                break
+            pause = _SWEEP_PAUSE_S * round_no
+            entries_left = sum(len(groups[t]) for t in pending_texts)
+            self._log(
+                "WARNING",
+                f"{entries_left} textos quedaron sin traducir (probablemente por límite de "
+                f"peticiones de Google). Esperando {pause}s y reintentando de uno en uno "
+                f"— pasada {round_no} de {_SWEEP_ROUNDS}...",
+            )
+            _wait(pause)
+            if self._cancel.is_set():
+                break
+            # The bar rewinds by what is being retried so the sweep shows real
+            # movement instead of sitting at 100% for minutes.
+            completed_entries -= entries_left
+            before = len(pending_texts)
+            pending_texts = run_pass(pending_texts, 1, _SWEEP_RETRIES)
+            recovered = before - len(pending_texts)
+            if recovered:
+                self._log("SUCCESS", f"Recuperados {recovered} textos en la pasada {round_no}.")
+            if len(pending_texts) == before:
+                # Nothing moved: another round would just wait longer for the
+                # same answer.
+                self._log("WARNING", "El reintento no recuperó ninguno; se detiene aquí.")
+                break
 
         # Final checkpoint after loop ends (covers items translated since last periodic save)
         if config.get("checkpoint_enabled"):
@@ -360,4 +440,12 @@ class TranslationWorker(threading.Thread):
             "SUCCESS",
             f"Traducción completa: {translated} traducidos, {errors} errores.",
         )
+        if errors:
+            # Said plainly, because an unfinished run that looks finished is how
+            # text ends up shipped untranslated.
+            self._log(
+                "WARNING",
+                f"Quedan {errors} textos sin traducir. Vuelve a pulsar Traducir para "
+                f"reintentarlos: solo se procesan esos, el resto ya está guardado.",
+            )
         self._emit(WorkerMessage.complete(self.result))
