@@ -7,6 +7,7 @@ import time
 from core import logger
 from core.models import TextEntry
 from utils.text_utils import (
+    keep_trailing_conditions,
     protect_game_codes,
     restore_game_codes,
     transfer_outer_spacing,
@@ -37,7 +38,7 @@ class BaseTranslator(ABC):
         out = restore_game_codes(raw, saved)
         if not translation_is_safe(out, saved):
             raise ValueError(f"translation dropped game codes: {text!r}")
-        return transfer_outer_spacing(text, out)
+        return transfer_outer_spacing(text, keep_trailing_conditions(text, out))
 
     def translate_batch(
         self,

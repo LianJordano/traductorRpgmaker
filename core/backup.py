@@ -65,6 +65,22 @@ def backup_root(game_dir: Path) -> Path:
     return Path(game_dir) / BACKUP_DIR_NAME
 
 
+#: Files the tool can modify that live *outside* the data directory, stored in
+#: the backup under this prefix and restored relative to the data folder's
+#: parent. Without them a damaged `js/plugins.js` could not be recovered at all.
+EXTRA_PREFIX = "_rpgt_extra"
+
+
+def extra_targets(data_dir: Path) -> list[Path]:
+    """Modifiable files outside data_dir that belong in the backup."""
+    found = []
+    for candidate in (data_dir.parent / "js" / "plugins.js",
+                      data_dir.parent / "plugins.js"):
+        if candidate.is_file():
+            found.append(candidate)
+    return found
+
+
 def _game_files(data_dir: Path) -> list[Path]:
     """Every game file under data_dir, excluding our own working files.
 
@@ -96,6 +112,11 @@ def _fingerprint(data_dir: Path) -> str:
     h = hashlib.blake2b(digest_size=16)
     for path in _game_files(data_dir):
         h.update(path.relative_to(data_dir).as_posix().encode("utf-8") + b"\0")
+        with path.open("rb") as f:
+            for chunk in iter(lambda: f.read(_CHUNK), b""):
+                h.update(chunk)
+    for path in extra_targets(data_dir):
+        h.update(path.relative_to(data_dir.parent).as_posix().encode("utf-8") + b"\0")
         with path.open("rb") as f:
             for chunk in iter(lambda: f.read(_CHUNK), b""):
                 h.update(chunk)
@@ -214,6 +235,9 @@ def _write_archive(data_dir: Path, dest: Path, fingerprint: str) -> Path:
         z.comment = fingerprint.encode("utf-8")
         for path in _game_files(data_dir):
             z.write(path, f"{top}/{path.relative_to(data_dir).as_posix()}")
+        for path in extra_targets(data_dir):
+            rel = path.relative_to(data_dir.parent).as_posix()
+            z.write(path, f"{EXTRA_PREFIX}/{rel}")
     tmp.replace(dest)
     return dest
 
@@ -223,6 +247,10 @@ def _write_folder(data_dir: Path, dest: Path, fingerprint: str) -> Path:
         data_dir, dest,
         ignore=shutil.ignore_patterns(BACKUP_DIR_NAME, "*.rpgt_tmp"),
     )
+    for path in extra_targets(data_dir):
+        target = dest.parent / EXTRA_PREFIX / path.relative_to(data_dir.parent)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(path, target)
     try:
         (dest.parent / ".rpgt_fingerprint").write_text(fingerprint, encoding="utf-8")
     except Exception:
@@ -258,7 +286,7 @@ def restore_backup(backup_path: Path, data_dir: Path) -> bool:
         # inside the very directory being replaced, so reading it after moving
         # that directory aside would fail — and a half-restored game is worse
         # than no restore at all.
-        _unpack(backup_path, staging, data_dir.name)
+        _unpack(backup_path, staging, data_dir.name, extra_root=data_dir.parent)
 
         if data_dir.exists():
             data_dir.rename(temp_aside)
@@ -291,18 +319,29 @@ def restore_backup(backup_path: Path, data_dir: Path) -> bool:
         return False
 
 
-def _unpack(backup_path: Path, dest: Path, data_name: str) -> None:
-    """Materialise a backup into `dest`, from either an archive or a folder."""
+def _unpack(backup_path: Path, dest: Path, data_name: str,
+            extra_root: Optional[Path] = None) -> None:
+    """Materialise a backup into `dest`, from either an archive or a folder.
+
+    Files stored under ``_rpgt_extra`` sit outside the data folder (currently
+    `js/plugins.js`) and are written straight to `extra_root`, so restoring
+    undoes plugin changes as well as data changes.
+    """
     if backup_path.is_file() and backup_path.suffix == ".zip":
         dest.mkdir(parents=True, exist_ok=True)
         with zipfile.ZipFile(backup_path) as z:
             for info in z.infolist():
                 if info.is_dir():
                     continue
-                # Strip the leading data-folder name recorded in the archive.
                 rel = Path(info.filename)
-                parts = rel.parts[1:] if len(rel.parts) > 1 else rel.parts
-                target = dest.joinpath(*parts)
+                if rel.parts and rel.parts[0] == EXTRA_PREFIX:
+                    if extra_root is None or len(rel.parts) < 2:
+                        continue
+                    target = extra_root.joinpath(*rel.parts[1:])
+                else:
+                    # Strip the leading data-folder name recorded in the archive.
+                    parts = rel.parts[1:] if len(rel.parts) > 1 else rel.parts
+                    target = dest.joinpath(*parts)
                 target.parent.mkdir(parents=True, exist_ok=True)
                 with z.open(info) as src, target.open("wb") as dst:
                     shutil.copyfileobj(src, dst)
@@ -317,6 +356,13 @@ def _unpack(backup_path: Path, dest: Path, data_name: str) -> None:
         source, dest,
         ignore=shutil.ignore_patterns(BACKUP_DIR_NAME, "*.rpgt_tmp"),
     )
+    stored_extra = backup_path / EXTRA_PREFIX
+    if extra_root is not None and stored_extra.is_dir():
+        for item in stored_extra.rglob("*"):
+            if item.is_file():
+                target = extra_root / item.relative_to(stored_extra)
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(item, target)
 
 
 # --------------------------------------------------------------------------- #

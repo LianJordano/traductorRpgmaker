@@ -52,6 +52,10 @@ _FUNCTIONAL_NAMES = {
     "regex", "pattern", "color", "colors", "colour", "anchor", "layer",
     "plugin", "scene", "window", "skin", "extension", "ext", "url", "api",
     "css", "selector", "event", "events",
+    # A value under `name` is usually the handle the plugin matches on — the
+    # entry of a struct list, a notetag, something stored in the save file — so
+    # renaming it detaches the entry from everything that refers to it.
+    "name", "names",
 }
 
 _TOKEN_SPLIT = re.compile(r"[A-Z]+(?![a-z])|[A-Z][a-z]*|[a-z]+|\d+")
@@ -80,6 +84,73 @@ def plugins_js_path(data_dir: Path) -> Optional[Path]:
         if candidate.is_file():
             return candidate
     return None
+
+
+#: Event commands whose parameters are code, never shown to the player.
+_CODE_COMMANDS = {
+    355, 655,        # Script / Script (continued)
+    356, 357,        # Plugin command (MV / MZ)
+    108, 408,        # Comment — plugins parse these as configuration
+    111,             # Conditional branch (a script branch holds an expression)
+    122,             # Control variables (script operand)
+}
+
+
+def code_vocabulary(data_dir: Path) -> set[str]:
+    """Every string the game uses as code rather than as text.
+
+    This is the one rule that generalises across games: a plugin can invent any
+    parameter name and any convention, but whatever it uses as a *key* has to
+    appear somewhere the tool does not translate — a notetag, a script call, a
+    plugin command, a comment. Translating a value that also lives in one of
+    those places silently breaks the link between them, which is how a crystal
+    or crafting system stops working while every file still looks valid.
+
+    Rather than guess from parameter names, a value is refused when the game
+    itself shows it being used as code.
+    """
+    import json as _json
+    vocabulary: set[str] = set()
+
+    def add(text: str) -> None:
+        text = text.strip()
+        if len(text) >= 2:
+            vocabulary.add(text)
+            # Notetags and script calls quote their keys; index the pieces too,
+            # so `<Crystal: Fire>` also protects `Crystal` and `Fire`.
+            for piece in re.findall(r"[^\s<>:,;'\"()\[\]{}=]{2,}", text):
+                vocabulary.add(piece)
+
+    def walk(obj: Any) -> None:
+        if isinstance(obj, list):
+            for item in obj:
+                walk(item)
+        elif isinstance(obj, dict):
+            note = obj.get("note")
+            if isinstance(note, str) and note.strip():
+                add(note)
+            code = obj.get("code")
+            if code in _CODE_COMMANDS:
+                for param in obj.get("parameters") or []:
+                    if isinstance(param, str):
+                        add(param)
+                    elif isinstance(param, list):
+                        for sub in param:
+                            if isinstance(sub, str):
+                                add(sub)
+                    elif isinstance(param, dict):
+                        for sub in param.values():
+                            if isinstance(sub, str):
+                                add(sub)
+            for value in obj.values():
+                walk(value)
+
+    for path in sorted(data_dir.glob("*.json")):
+        try:
+            walk(_json.loads(path.read_text(encoding="utf-8-sig")))
+        except Exception:
+            continue
+    return vocabulary
 
 
 def _read(path: Path) -> str:
@@ -216,7 +287,18 @@ def extract(data_dir: Path, make_entry) -> list[TextEntry]:
     text = _read(path)
     items = jsp.scan(text)
     names = jsp.plugin_names(items)
+    vocabulary = code_vocabulary(data_dir)
     entries: list[TextEntry] = []
+    skipped_keys = 0
+
+    def is_text(value: str) -> bool:
+        nonlocal skipped_keys
+        if not is_plugin_value_translatable(value):
+            return False
+        if value.strip() in vocabulary:
+            skipped_keys += 1
+            return False
+        return True
 
     for item in items:
         if not _is_parameter_value(item):
@@ -228,7 +310,7 @@ def extract(data_dir: Path, make_entry) -> list[TextEntry]:
         if nested is not None:
             # A struct / struct-array parameter: descend into its JSON.
             for json_path, value in _walk_nested(nested):
-                if not is_plugin_value_translatable(value):
+                if not is_text(value):
                     continue
                 entry = make_entry(
                     PLUGINS_FILE,
@@ -242,7 +324,7 @@ def extract(data_dir: Path, make_entry) -> list[TextEntry]:
                     entries.append(entry)
             continue
 
-        if not is_plugin_value_translatable(item.value):
+        if not is_text(item.value):
             continue
         entry = make_entry(
             PLUGINS_FILE,
@@ -257,6 +339,11 @@ def extract(data_dir: Path, make_entry) -> list[TextEntry]:
 
     if entries:
         logger.info(f"  → {len(entries)} textos de parámetros de plugin en {path.name}")
+    if skipped_keys:
+        logger.info(
+            f"  → {skipped_keys} parámetros omitidos: el juego los usa también "
+            f"como código (notetag, script o comando de plugin)"
+        )
     return entries
 
 

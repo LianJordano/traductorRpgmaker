@@ -8,6 +8,7 @@ from core import checkpoint, config, logger
 from core.models import ExtractionResult, WorkerMessage
 from translators.base import BaseTranslator
 from utils.text_utils import (
+    keep_trailing_conditions,
     missing_codes,
     protect_game_codes,
     restore_game_codes,
@@ -239,6 +240,7 @@ class TranslationWorker(threading.Thread):
                     # must never be written into the game.
                     if not translation_is_safe(out, saved):
                         raise UnsafeTranslation(missing_codes(out, saved))
+                    out = keep_trailing_conditions(text, out)
                     out = transfer_outer_spacing(text, out)
                     if delay > 0:
                         time.sleep(delay / 1000)

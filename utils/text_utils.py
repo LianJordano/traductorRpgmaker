@@ -37,8 +37,23 @@ def restore_rpg_codes(text: str, codes: list[tuple[int, str]]) -> str:
 #   5. format specifiers used by RPG Maker terms: %1, %2
 # Multi-letter codes MUST be matched before single-letter ones, otherwise `\SE[5]`
 # is protected as `\S` and the translator is free to mangle the leftover `E[5]`.
+#: Conditions plugins read out of the *visible* text of a choice, such as
+#: `Yes en(v[18]==1)` or `Diezel Castle Town if(s[152])`. They look like
+#: ordinary words to a translator, which rewrites or re-spaces them and leaves
+#: the plugin unable to parse its own condition — the choice is then always
+#: enabled or always hidden, and progression silently breaks. The lookahead
+#: demands a switch/variable reference or a comparison operator inside, so plain
+#: prose like "(recommended level: 35)" is left alone.
+_CONDITION = (
+    r"\b[A-Za-z_]{1,8}\("
+    r"(?=(?:[^()\n]|\([^()\n]*\)){0,120}?(?:[vs]\[\d+\]|[<>=!]=|&&|\|\|))"
+    r"(?:[^()\n]|\([^()\n]*\))*\)"
+)
+
 _PROTECT_RE = re.compile(
-    r"#\{[^}\n]{0,120}\}"                 # Ruby interpolation: #{actor.name}
+    _CONDITION +                          # en(v[18]==1), if(s[152])
+    r"|\b[vs]\[\d+\]"                     # bare switch / variable references
+    r"|#\{[^}\n]{0,120}\}"                # Ruby interpolation: #{actor.name}
     r"|<[^\s<>\n][^<>\n]{0,99}>"          # notetags / inline tags
     r"|\\[A-Za-z]+\[[^\]\n]{0,40}\]"      # \C[1], \V[10], \SE[5], \N[1]
     r"|\\[A-Za-z]{2,}"                    # \FS, \AF (no argument)
@@ -129,6 +144,41 @@ def translation_is_safe(restored: str, saved: list[str]) -> bool:
     kept instead of shipping a subtly wrong line.
     """
     return all(_is_cosmetic(code) for code in missing_codes(restored, saved))
+
+
+_TRAILING_CONDITION_RE = re.compile(r"(?:\s*(?:" + _CONDITION + r"))+\s*$")
+
+
+def keep_trailing_conditions(original: str, translated: str) -> str:
+    """Put a trailing plugin condition back at the end of the translation.
+
+    Protecting the condition keeps its characters intact, but a translator is
+    free to move the placeholder — Spanish word order often does. Plugins read
+    the condition as a *suffix* of the choice text, so one that ends up in the
+    middle stops being recognised. Restoring the original position is what makes
+    the round trip actually safe.
+    """
+    match = _TRAILING_CONDITION_RE.search(original)
+    if not match:
+        return translated
+    tail = original[match.start():]
+    if not tail.strip():
+        return translated
+
+    # A choice can carry several conditions in a row — `en(s[154])if(!s[154])` —
+    # and a translator may scatter them, so each one is pulled out individually
+    # before the original run is appended back whole.
+    conditions = re.findall(_CONDITION, tail)
+    if not conditions:
+        return translated
+
+    body = translated
+    for condition in conditions:
+        index = body.find(condition)
+        if index == -1:
+            return translated          # a condition went missing: leave it alone
+        body = body[:index] + body[index + len(condition):]
+    return body.rstrip() + tail
 
 
 def transfer_outer_spacing(original: str, translated: str) -> str:
