@@ -1,7 +1,7 @@
 """Google Translate via the deep-translator library (no API key required for basic use)."""
 from __future__ import annotations
 
-from translators.base import BaseTranslator
+from translators.base import BaseTranslator, TranslationUnavailable
 from core import logger
 
 try:
@@ -29,11 +29,10 @@ class GoogleTranslator(BaseTranslator):
             raise ImportError("deep-translator not installed. Run: pip install deep-translator")
         if not text.strip():
             return text
-        # "TranslationNotFound" is raised both for genuinely untranslatable
-        # strings (proper nouns, interjections) and for transient hiccups, so it
-        # is retried once before accepting the original text. Treating it as a
-        # hard error would fail the whole entry; accepting it immediately would
-        # silently leave common words untranslated.
+        # "TranslationNotFound" covers both genuinely untranslatable strings and
+        # Google throttling. It is retried once here and then surfaced, so the
+        # worker can back off and try again rather than quietly keeping the
+        # original text and reporting the entry as translated.
         import time
         for attempt in (0, 1):
             try:
@@ -43,7 +42,9 @@ class GoogleTranslator(BaseTranslator):
                 if attempt == 0:
                     time.sleep(0.5)
                     continue
-                return text
+                raise TranslationUnavailable(
+                    f"Google no devolvió traducción para {text[:40]!r}"
+                )
             except Exception as exc:
                 logger.warning(f"Google Translate error: {exc}")
                 raise

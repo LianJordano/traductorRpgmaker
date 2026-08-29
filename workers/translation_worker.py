@@ -7,7 +7,7 @@ from typing import Optional
 from core import checkpoint, config, logger
 from core.models import ExtractionResult, WorkerMessage
 from validators.text_filter import detect_source_language
-from translators.base import BaseTranslator
+from translators.base import BaseTranslator, TranslationUnavailable
 from utils.text_utils import (
     keep_trailing_conditions,
     missing_codes,
@@ -235,6 +235,12 @@ class TranslationWorker(threading.Thread):
             after exhausting retries (so the caller marks it as an error)."""
             backoff = 1.0
             unsafe_retries_left = 1
+            # Decided once per text, not per attempt, so a retried string is
+            # not counted twice in the summary.
+            lang = detect_source_language(text, src)
+            if lang != src:
+                with routed_lock:
+                    routed[lang] = routed.get(lang, 0) + 1
             for attempt in range(_MAX_RETRIES + 1):
                 while self._pause.is_set() and not self._cancel.is_set():
                     time.sleep(0.2)
@@ -244,10 +250,6 @@ class TranslationWorker(threading.Thread):
                 limiter.acquire()
                 try:
                     protected, saved = protect_game_codes(text)
-                    lang = detect_source_language(text, src)
-                    if lang != src:
-                        with routed_lock:
-                            routed[lang] = routed.get(lang, 0) + 1
                     raw = get_translator(lang).translate_one(protected)
                     out = restore_game_codes(raw, saved)
                     # A translator that mangled a \N[1] or a <notetag> produces
@@ -270,7 +272,8 @@ class TranslationWorker(threading.Thread):
                         continue
                     raise
                 except Exception as exc:
-                    if not _is_rate_limit(exc) or attempt >= _MAX_RETRIES:
+                    retryable = _is_rate_limit(exc) or isinstance(exc, TranslationUnavailable)
+                    if not retryable or attempt >= _MAX_RETRIES:
                         raise
                     lowered = limiter.decrease()
                     if lowered is not None:

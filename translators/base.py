@@ -15,6 +15,16 @@ from utils.text_utils import (
 )
 
 
+class TranslationUnavailable(Exception):
+    """The backend returned no translation for this text.
+
+    Google reports this both for genuinely untranslatable strings and, crucially,
+    while it is throttling. Treating it as success and keeping the original would
+    silently leave text untranslated in a run that reports no errors, so it is
+    raised and left to the worker to retry with backoff.
+    """
+
+
 class BaseTranslator(ABC):
     name: str = "base"
 
