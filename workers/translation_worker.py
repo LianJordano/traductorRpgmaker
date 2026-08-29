@@ -6,6 +6,7 @@ from typing import Optional
 
 from core import checkpoint, config, logger
 from core.models import ExtractionResult, WorkerMessage
+from validators.text_filter import detect_source_language
 from translators.base import BaseTranslator
 from utils.text_utils import (
     keep_trailing_conditions,
@@ -201,12 +202,22 @@ class TranslationWorker(threading.Thread):
         # thread builds and reuses its own translator instance.
         tls = threading.local()
 
-        def get_translator() -> BaseTranslator:
-            tr = getattr(tls, "tr", None)
+        def get_translator(lang: str) -> BaseTranslator:
+            cache = getattr(tls, "by_lang", None)
+            if cache is None:
+                cache = {}
+                tls.by_lang = cache
+            tr = cache.get(lang)
             if tr is None:
-                tr = _build_translator(self.translator_name, src, tgt)
-                tls.tr = tr
+                tr = _build_translator(self.translator_name, lang, tgt)
+                cache[lang] = tr
             return tr
+
+        # A partially translated game mixes languages: asking Google for
+        # Japanese "from English" either errors or hands the text back
+        # untranslated, so each string is routed by the script it is written in.
+        routed: dict[str, int] = {}
+        routed_lock = threading.Lock()
 
         limiter = AdaptiveLimiter(max_workers)
         log_lock = threading.Lock()
@@ -233,7 +244,11 @@ class TranslationWorker(threading.Thread):
                 limiter.acquire()
                 try:
                     protected, saved = protect_game_codes(text)
-                    raw = get_translator().translate_one(protected)
+                    lang = detect_source_language(text, src)
+                    if lang != src:
+                        with routed_lock:
+                            routed[lang] = routed.get(lang, 0) + 1
+                    raw = get_translator(lang).translate_one(protected)
                     out = restore_game_codes(raw, saved)
                     # A translator that mangled a \N[1] or a <notetag> produces
                     # text that reads plausibly but says the wrong thing, so it
@@ -325,6 +340,16 @@ class TranslationWorker(threading.Thread):
         # Final checkpoint after loop ends (covers items translated since last periodic save)
         if config.get("checkpoint_enabled"):
             checkpoint.save(self.result.game_path, self.result.to_dict())
+
+        if routed:
+            detail = ", ".join(f"{n} en {lang}" for lang, n in sorted(routed.items()))
+            self._log("INFO", f"Textos detectados en otro idioma y traducidos como tal: {detail}")
+
+        locked = sum(1 for e in self.result.entries if e.status == "locked")
+        if locked:
+            self._log("INFO",
+                      f"{locked} textos no se han traducido porque un script del juego "
+                      f"los consulta por su valor (estado 'locked' en la exportación).")
 
         translated = sum(1 for e in self.result.entries if e.status == "translated")
         errors = sum(1 for e in self.result.entries if e.status == "error")

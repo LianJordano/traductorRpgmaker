@@ -234,3 +234,35 @@ def is_plugin_value_translatable(value: str) -> bool:
         if any(unicodedata.category(ch).startswith("L") and ord(ch) > 0x2FF for ch in t):
             return True
     return bool(re.search(r"\s", t) or re.search(r"[.!?…:;、。！？]", t))
+
+
+# --------------------------------------------------------------------------- #
+# Per-string source language
+# --------------------------------------------------------------------------- #
+
+_KANA = re.compile(r"[\u3040-\u30ff]")
+_HAN = re.compile(r"[\u4e00-\u9fff]")
+_HANGUL = re.compile(r"[\uac00-\ud7af]")
+_CYRILLIC = re.compile(r"[\u0400-\u04ff]")
+
+
+def detect_source_language(text: str, configured: str) -> str:
+    """Pick the language to translate this particular string from.
+
+    A game is rarely all one language: partially translated releases leave
+    Japanese menus inside an otherwise English game. Asking Google to translate
+    Japanese "from English" either errors or hands the text straight back
+    untranslated, so each string is routed by the script it is actually written
+    in and only falls back to the configured source when there is no signal.
+    """
+    if _KANA.search(text):
+        return "ja"
+    if _HANGUL.search(text):
+        return "ko"
+    if _CYRILLIC.search(text):
+        return "ru"
+    if _HAN.search(text):
+        # Han characters alone are shared by Japanese and Chinese; trust the
+        # configured language when it is one of them.
+        return configured if configured.startswith(("ja", "zh")) else "ja"
+    return configured

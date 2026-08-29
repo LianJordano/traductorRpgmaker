@@ -86,40 +86,23 @@ def plugins_js_path(data_dir: Path) -> Optional[Path]:
     return None
 
 
-#: Event commands whose parameters are code, never shown to the player.
-_CODE_COMMANDS = {
-    355, 655,        # Script / Script (continued)
-    356, 357,        # Plugin command (MV / MZ)
-    108, 408,        # Comment — plugins parse these as configuration
-    111,             # Conditional branch (a script branch holds an expression)
-    122,             # Control variables (script operand)
-}
+#: Notetags are written `<Key: value>`; those pieces are what a plugin matches
+#: on. Matching against the *whole* note text instead was measured to be almost
+#: entirely false positives, so only what sits inside the angle brackets counts.
+_NOTETAG = re.compile(r"<([^<>\n]{1,120})>")
 
 
-def code_vocabulary(data_dir: Path) -> set[str]:
-    """Every string the game uses as code rather than as text.
-
-    This is the one rule that generalises across games: a plugin can invent any
-    parameter name and any convention, but whatever it uses as a *key* has to
-    appear somewhere the tool does not translate — a notetag, a script call, a
-    plugin command, a comment. Translating a value that also lives in one of
-    those places silently breaks the link between them, which is how a crystal
-    or crafting system stops working while every file still looks valid.
-
-    Rather than guess from parameter names, a value is refused when the game
-    itself shows it being used as code.
-    """
+def notetag_keys(data_dir: Path) -> set[str]:
+    """Every key and value written inside a `<...>` notetag."""
     import json as _json
-    vocabulary: set[str] = set()
+    keys: set[str] = set()
 
-    def add(text: str) -> None:
-        text = text.strip()
-        if len(text) >= 2:
-            vocabulary.add(text)
-            # Notetags and script calls quote their keys; index the pieces too,
-            # so `<Crystal: Fire>` also protects `Crystal` and `Fire`.
-            for piece in re.findall(r"[^\s<>:,;'\"()\[\]{}=]{2,}", text):
-                vocabulary.add(piece)
+    def add(note: str) -> None:
+        for inner in _NOTETAG.findall(note):
+            for piece in re.split(r"[:,;=]", inner):
+                piece = piece.strip()
+                if len(piece) >= 2:
+                    keys.add(piece)
 
     def walk(obj: Any) -> None:
         if isinstance(obj, list):
@@ -127,21 +110,8 @@ def code_vocabulary(data_dir: Path) -> set[str]:
                 walk(item)
         elif isinstance(obj, dict):
             note = obj.get("note")
-            if isinstance(note, str) and note.strip():
+            if isinstance(note, str) and "<" in note:
                 add(note)
-            code = obj.get("code")
-            if code in _CODE_COMMANDS:
-                for param in obj.get("parameters") or []:
-                    if isinstance(param, str):
-                        add(param)
-                    elif isinstance(param, list):
-                        for sub in param:
-                            if isinstance(sub, str):
-                                add(sub)
-                    elif isinstance(param, dict):
-                        for sub in param.values():
-                            if isinstance(sub, str):
-                                add(sub)
             for value in obj.values():
                 walk(value)
 
@@ -150,7 +120,7 @@ def code_vocabulary(data_dir: Path) -> set[str]:
             walk(_json.loads(path.read_text(encoding="utf-8-sig")))
         except Exception:
             continue
-    return vocabulary
+    return keys
 
 
 def _read(path: Path) -> str:
@@ -287,7 +257,9 @@ def extract(data_dir: Path, make_entry) -> list[TextEntry]:
     text = _read(path)
     items = jsp.scan(text)
     names = jsp.plugin_names(items)
-    vocabulary = code_vocabulary(data_dir)
+    from validators.reference_guard import build as build_guard
+    vocabulary = notetag_keys(data_dir)
+    guard = build_guard(data_dir)
     entries: list[TextEntry] = []
     skipped_keys = 0
 
@@ -295,7 +267,8 @@ def extract(data_dir: Path, make_entry) -> list[TextEntry]:
         nonlocal skipped_keys
         if not is_plugin_value_translatable(value):
             return False
-        if value.strip() in vocabulary:
+        stripped = value.strip()
+        if stripped in vocabulary or guard.is_referenced(stripped):
             skipped_keys += 1
             return False
         return True
@@ -341,8 +314,8 @@ def extract(data_dir: Path, make_entry) -> list[TextEntry]:
         logger.info(f"  → {len(entries)} textos de parámetros de plugin en {path.name}")
     if skipped_keys:
         logger.info(
-            f"  → {skipped_keys} parámetros omitidos: el juego los usa también "
-            f"como código (notetag, script o comando de plugin)"
+            f"  → {skipped_keys} parámetros omitidos: el juego los usa como clave "
+            f"(notetag o consulta desde un script)"
         )
     return entries
 

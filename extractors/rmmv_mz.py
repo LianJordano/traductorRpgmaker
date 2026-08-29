@@ -8,6 +8,7 @@ from core import config, logger
 from core.models import ExtractionResult, TextEntry
 from extractors.base import BaseExtractor
 from extractors import plugin_text
+from validators.reference_guard import build as build_reference_guard
 from parsers.json_parser import load as json_load, save as json_save
 from utils.text_utils import layout_message
 
@@ -60,6 +61,12 @@ class MvMzExtractor(BaseExtractor):
         )
         files = self._get_target_files()
         total = len(files)
+        # Strings the game's own scripts look up by value must not be renamed.
+        try:
+            self._guard = build_reference_guard(self.data_dir)
+        except Exception:
+            self._guard = None
+        self._locked = 0
 
         for idx, fpath in enumerate(files):
             if self._cancelled():
@@ -75,6 +82,13 @@ class MvMzExtractor(BaseExtractor):
                 msg = f"Error in {fpath.name}: {exc}"
                 logger.error(msg)
                 result.errors.append(msg)
+
+        if self._locked:
+            logger.warning(
+                f"{self._locked} textos bloqueados: un script del juego los "
+                f"consulta por su valor exacto. Aparecen en la exportación con "
+                f"estado 'locked' por si quieres traducirlos a mano."
+            )
 
         if config.get("translate_plugins"):
             try:

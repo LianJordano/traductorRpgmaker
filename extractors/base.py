@@ -51,10 +51,20 @@ class BaseExtractor(ABC):
         if not is_translatable(text):
             return None
         uid = f"{file}::{context}::{index}"
-        return TextEntry(
+        entry = TextEntry(
             uid=uid,
             file=file,
             context=context,
             original=text,
             metadata=metadata or {},
         )
+        # A string the game's own scripts look up by value cannot be renamed
+        # without detaching whatever refers to it. Such entries are still
+        # extracted and exported — marked `locked`, so they are visible and can
+        # be translated by hand — but never sent to the translator.
+        guard = getattr(self, "_guard", None)
+        if guard is not None and guard.is_referenced(text):
+            entry.status = "locked"
+            entry.metadata["locked_reason"] = "un script del juego lo consulta por su valor"
+            self._locked = getattr(self, "_locked", 0) + 1
+        return entry
