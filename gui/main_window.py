@@ -58,10 +58,46 @@ class MainWindow(ctk.CTk):
         self.geometry(self.GEOMETRY)
         self.minsize(900, 600)
         self.configure(fg_color=theme.BG_PRIMARY)
+        # Without this the window closes but the process does not: the
+        # translation pool's threads are not daemons, so the interpreter waits
+        # for them at exit while the run carries on with no window to show it.
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
         try:
             self.iconbitmap(default="")
         except Exception:
             pass
+
+    def _on_close(self) -> None:
+        """Stop any running work before letting the window go."""
+        worker = self._worker
+        running = worker is not None and getattr(worker, "is_alive", lambda: False)()
+
+        if running:
+            if not mb.askokcancel(
+                "Salir",
+                "Hay una tarea en curso.\n\n"
+                "Si sales ahora se detendrá. Lo ya traducido se conserva en el "
+                "punto de control y podrás continuar más tarde.\n\n¿Cerrar?",
+                parent=self,
+            ):
+                return
+            for method in ("resume", "cancel"):
+                try:
+                    getattr(worker, method)()
+                except Exception:
+                    pass
+            # Give the threads a moment to notice, keeping the window responsive
+            # instead of freezing on a hard join.
+            import time
+            deadline = time.monotonic() + 8.0
+            while worker.is_alive() and time.monotonic() < deadline:
+                try:
+                    self.update()
+                except Exception:
+                    break
+                time.sleep(0.1)
+
+        self.destroy()
 
     # ── Layout construction ────────────────────────────────────────────────────
 

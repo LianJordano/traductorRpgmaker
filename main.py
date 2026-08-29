@@ -5,6 +5,12 @@ import os
 # Ensure project root is in path when running as a script
 sys.path.insert(0, os.path.dirname(__file__))
 
+import socket
+
+# No network call may hang forever: a stuck request would keep a translation
+# thread alive and, with it, the whole process after the window is closed.
+socket.setdefaulttimeout(30)
+
 from gui.styles import theme
 theme.apply()
 
